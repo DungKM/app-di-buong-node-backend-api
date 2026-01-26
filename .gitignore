@@ -1,0 +1,43 @@
+# ===== Node =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# ===== Env =====
+.env
+.env.*
+!.env.example
+
+# ===== Build / Dist =====
+dist/
+build/
+coverage/
+
+# ===== Runtime =====
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ===== IDE / Editor =====
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# ===== TypeScript cache (if any) =====
+*.tsbuildinfo
+
+# ===== Misc =====
+.tmp/
+temp/
+.cache/
