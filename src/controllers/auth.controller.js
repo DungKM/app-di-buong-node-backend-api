@@ -3,13 +3,22 @@ const User = require("../models/User");
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require("../utils/jwt");
 
 function buildAccessPayload(user) {
-  return { sub: user._id.toString(), email: user.email, role: user.role };
+  return {
+    sub: user._id.toString(),
+    username: user.username,
+    role: user.role,
+    idKhoa: user.idKhoa ?? null,
+  };
 }
 
 exports.login = async (req, res) => {
-  const { email, password } = req.body;
+  const { username, password } = req.body;
 
-  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!username || !password) {
+    return res.status(400).json({ message: "Missing username or password" });
+  }
+
+  const user = await User.findOne({ username: username.toLowerCase() });
   if (!user || !user.isActive) return res.status(401).json({ message: "Invalid credentials" });
 
   const ok = await bcrypt.compare(password, user.passwordHash);
@@ -67,14 +76,25 @@ exports.logout = async (req, res) => {
 
 // (tuỳ chọn) admin tạo user
 exports.createUser = async (req, res) => {
-  const { email, password, role } = req.body;
+  const { username, password, role, idKhoa } = req.body;
 
-  const existed = await User.findOne({ email: email.toLowerCase() });
-  if (existed) return res.status(409).json({ message: "Email already exists" });
+  const existed = await User.findOne({ username: username.toLowerCase() });
+  if (existed) return res.status(409).json({ message: "Username already exists" });
 
   const rounds = Number(process.env.BCRYPT_SALT_ROUNDS || 10);
   const passwordHash = await bcrypt.hash(password, rounds);
 
-  const user = await User.create({ email: email.toLowerCase(), passwordHash, role });
-  return res.status(201).json({ id: user._id, email: user.email, role: user.role });
+  const user = await User.create({
+    username: username.toLowerCase(),
+    passwordHash,
+    role,
+    idKhoa: idKhoa ?? null,
+  });
+
+  return res.status(201).json({
+    id: user._id,
+    username: user.username,
+    role: user.role,
+    idKhoa: user.idKhoa,
+  });
 };
