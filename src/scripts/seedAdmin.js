@@ -32,3 +32,6 @@ const User = require("../models/User");
   console.log("Seeded admin:", { username, password });
   process.exit(0);
 })();
+
+
+// Doctor@123456
