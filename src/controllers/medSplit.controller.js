@@ -1,6 +1,5 @@
 const MedShiftSplit = require("../models/MedShiftSplit");
 
-// GET splits theo lần khám
 exports.list = async (req, res) => {
   try {
     const { idPhieuKham } = req.params;
@@ -21,20 +20,19 @@ exports.list = async (req, res) => {
   }
 };
 
-// PUT save 1 thuốc (Chia ca)
 exports.saveOne = async (req, res) => {
   const { idPhieuKham, idPhieuThuoc } = req.params;
   const { splits } = req.body;
-  const userId = req.user?.id; // Lấy ID người dùng từ middleware auth
+  const userId = req.user?.id;
 
   const updated = await MedShiftSplit.findOneAndUpdate(
     { idPhieuKham, idPhieuThuoc },
-    { 
-      $set: { 
+    {
+      $set: {
         splits,
         updatedBy: userId,
-        status: "Chờ dùng thuốc" // Khi chia lại ca, reset về trạng thái chờ dùng
-      } 
+        status: "Chờ dùng thuốc"
+      }
     },
     { upsert: true, new: true }
   );
@@ -42,7 +40,6 @@ exports.saveOne = async (req, res) => {
   return res.json(updated);
 };
 
-// PATCH Xác nhận dùng thuốc
 exports.confirmUsage = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
@@ -69,14 +66,14 @@ exports.returnMedication = async (req, res) => {
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
-      { 
-        $push: { 
-          returnHistory: { 
-            quantity, 
-            reason, 
-            returnedBy: userId, 
-            returnedAt: new Date() 
-          } 
+      {
+        $push: {
+          returnHistory: {
+            quantity,
+            reason,
+            returnedBy: userId,
+            returnedAt: new Date()
+          }
         },
         $set: { updatedBy: userId }
       },
@@ -98,12 +95,12 @@ exports.saveBatch = async (req, res) => {
   for (const it of items) {
     await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc: it.idPhieuThuoc },
-      { 
-        $set: { 
-          splits: it.splits, 
+      {
+        $set: {
+          splits: it.splits,
           updatedBy: userId,
-          status: "Chờ dùng thuốc" 
-        } 
+          status: "Chờ dùng thuốc"
+        }
       },
       { upsert: true, new: true }
     );
