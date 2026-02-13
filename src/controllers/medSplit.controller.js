@@ -61,8 +61,10 @@ exports.confirmUsage = async (req, res) => {
 exports.returnMedication = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
-    const { quantity, reason } = req.body;
-    const userId = req.user?.id;
+    const { quantity, reason, tenBenhNhan, maBenhNhan, tenThuoc } = req.body;
+
+    const userId = req.user?.sub || req.user?.id; // tuỳ middleware set gì
+    const idKhoaRoom = req.user?.idKhoa ? String(req.user.idKhoa) : null;
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
@@ -72,13 +74,31 @@ exports.returnMedication = async (req, res) => {
             quantity,
             reason,
             returnedBy: userId,
-            returnedAt: new Date()
-          }
+            returnedAt: new Date(),
+          },
         },
-        $set: { updatedBy: userId }
+        $set: { updatedBy: userId },
       },
       { new: true }
     );
+
+    // ✅ Emit realtime
+    if (global._io && idKhoaRoom) {
+      global._io.to(idKhoaRoom).emit("new_notification", {
+        type: "RETURN",
+        idPhieuKham,
+        idPhieuThuoc,
+        tenBenhNhan: tenBenhNhan || "Bệnh nhân",
+        maBenhNhan: maBenhNhan || "N/A",
+        tenThuoc: tenThuoc || "Thuốc",
+        soLuongTra: Number(quantity || 0),
+        reason: reason || "",
+        time: new Date().toISOString(),
+      });
+      console.log("🚀 [EMIT] new_notification -> room:", idKhoaRoom);
+    } else {
+      console.log("⚠️ NOT EMIT: missing io or idKhoaRoom", { hasIO: !!global._io, idKhoaRoom });
+    }
 
     return res.json(updated);
   } catch (error) {
@@ -107,4 +127,26 @@ exports.saveBatch = async (req, res) => {
   }
 
   return res.json({ ok: true });
+};
+
+exports.traThuoc = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.sub).select("idKhoa");
+    const idKhoaRoom = user?.idKhoa?.toString();
+
+    if (global._io && idKhoaRoom) {
+      global._io.to(idKhoaRoom).emit("new_notification", {
+        tenBenhNhan: req.body.tenBenhNhan,
+        maBenhNhan: req.body.maBenhNhan,
+        tenThuoc: req.body.tenThuoc,
+        soLuongTra: req.body.soLuongTra,
+        time: new Date(),
+      });
+      console.log("🚀 [EMIT] to room:", idKhoaRoom);
+    }
+
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
 };

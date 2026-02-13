@@ -14,7 +14,11 @@ async function main() {
   await mongoose.connect(process.env.MONGO_URI);
   console.log("MongoDB connected");
 
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  app.listen(PORT, () => {
+  // Thay đổi log để chắc chắn bạn đang chạy đúng instance
+  console.log(`🚀 [SOCKET.IO] Server đang lắng nghe tại cổng ${PORT}`);
+  console.log(`🌐 [CORS] Cho phép các nguồn: ${process.env.CORS_ORIGINS}`);
+});
 }
 
 main().catch((err) => {

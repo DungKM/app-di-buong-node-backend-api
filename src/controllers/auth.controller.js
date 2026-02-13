@@ -3,12 +3,18 @@ const User = require("../models/User");
 const Department = require('../models/Department');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require("../utils/jwt");
 
-function buildAccessPayload(user) {
+async function buildAccessPayload(user) {
+  const dept = user.idKhoa
+    ? await Department.findById(user.idKhoa).select("name")
+    : null;
+
   return {
     sub: user._id.toString(),
     username: user.username,
     role: user.role,
+
     idKhoa: user.idKhoa ?? null,
+    tenKhoa: dept?.name ?? null,
   };
 }
 const hashPassword = async (password) => {
@@ -24,18 +30,42 @@ exports.login = async (req, res) => {
   }
 
   const user = await User.findOne({ username: username.toLowerCase() });
-  if (!user || !user.isActive) return res.status(401).json({ message: "Invalid credentials" });
+  if (!user || !user.isActive)
+    return res.status(401).json({ message: "Invalid credentials" });
 
   const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+  if (!ok)
+    return res.status(401).json({ message: "Invalid credentials" });
 
-  const accessToken = signAccessToken(buildAccessPayload(user));
+  // 👇 Lấy tên khoa
+  let tenKhoa = null;
+  if (user.idKhoa) {
+    const dept = await Department.findById(user.idKhoa).select("name");
+    tenKhoa = dept?.name ?? null;
+  }
+
+  const accessToken = signAccessToken({
+    sub: user._id.toString(),
+    username: user.username,
+    role: user.role,
+    idKhoa: user.idKhoa?.toString() ?? null,
+    tenKhoa,
+  });
+
   const refreshToken = signRefreshToken({ sub: user._id.toString() });
 
   user.refreshTokens.push(refreshToken);
   await user.save();
 
-  return res.json({ accessToken, refreshToken, role: user.role });
+  return res.json({
+    accessToken,
+    refreshToken,
+    role: user.role,
+    username: user.username,
+    name: user.fullName ?? user.username,
+    idKhoa: user.idKhoa?.toString() ?? null,
+    tenKhoa, // ✅ thêm dòng này
+  });
 };
 
 exports.refresh = async (req, res) => {
@@ -55,7 +85,7 @@ exports.refresh = async (req, res) => {
     return res.status(401).json({ message: "Refresh token revoked" });
   }
 
-  const accessToken = signAccessToken(buildAccessPayload(user));
+  const accessToken = signAccessToken(await buildAccessPayload(user));
   return res.json({ accessToken });
 };
 
