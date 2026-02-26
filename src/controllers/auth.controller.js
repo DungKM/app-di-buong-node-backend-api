@@ -37,7 +37,6 @@ exports.login = async (req, res) => {
   if (!ok)
     return res.status(401).json({ message: "Invalid credentials" });
 
-  // 👇 Lấy tên khoa
   let tenKhoa = null;
   if (user.idKhoa) {
     const dept = await Department.findById(user.idKhoa).select("name");
@@ -64,7 +63,7 @@ exports.login = async (req, res) => {
     username: user.username,
     name: user.fullName ?? user.username,
     idKhoa: user.idKhoa?.toString() ?? null,
-    tenKhoa, // ✅ thêm dòng này
+    tenKhoa,
   });
 };
 

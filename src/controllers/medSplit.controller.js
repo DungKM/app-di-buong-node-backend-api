@@ -62,27 +62,21 @@ exports.returnMedication = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
     const { quantity, reason, tenBenhNhan, maBenhNhan, tenThuoc } = req.body;
-
-    const userId = req.user?.sub || req.user?.id; // tuỳ middleware set gì
-    const idKhoaRoom = req.user?.idKhoa ? String(req.user.idKhoa) : null;
-
+    const userId = req.user?.id;
+    console.log(tenThuoc);
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
         $push: {
-          returnHistory: {
-            quantity,
-            reason,
-            returnedBy: userId,
-            returnedAt: new Date(),
-          },
+          returnHistory: { quantity, reason, returnedBy: userId, returnedAt: new Date() }
         },
-        $set: { updatedBy: userId },
+        $set: { updatedBy: userId }
       },
       { new: true }
     );
 
-    // ✅ Emit realtime
+    // ✅ Emit realtime (room = khoa)
+    const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa; // tùy bạn attach ở middleware
     if (global._io && idKhoaRoom) {
       global._io.to(idKhoaRoom).emit("new_notification", {
         type: "RETURN",
@@ -91,13 +85,10 @@ exports.returnMedication = async (req, res) => {
         tenBenhNhan: tenBenhNhan || "Bệnh nhân",
         maBenhNhan: maBenhNhan || "N/A",
         tenThuoc: tenThuoc || "Thuốc",
-        soLuongTra: Number(quantity || 0),
+        soLuongTra: quantity || 0,
         reason: reason || "",
-        time: new Date().toISOString(),
+        time: new Date(),
       });
-      console.log("🚀 [EMIT] new_notification -> room:", idKhoaRoom);
-    } else {
-      console.log("⚠️ NOT EMIT: missing io or idKhoaRoom", { hasIO: !!global._io, idKhoaRoom });
     }
 
     return res.json(updated);
