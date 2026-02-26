@@ -1,6 +1,6 @@
 require("dotenv").config();
 const mongoose = require("mongoose");
-const app = require("./app");
+const server = require("./app"); // ✅ app.js export server rồi
 
 const PORT = process.env.PORT || 3000;
 
@@ -14,11 +14,10 @@ async function main() {
   await mongoose.connect(process.env.MONGO_URI);
   console.log("MongoDB connected");
 
-  app.listen(PORT, () => {
-  // Thay đổi log để chắc chắn bạn đang chạy đúng instance
-  console.log(`🚀 [SOCKET.IO] Server đang lắng nghe tại cổng ${PORT}`);
-  console.log(`🌐 [CORS] Cho phép các nguồn: ${process.env.CORS_ORIGINS}`);
-});
+  server.listen(PORT, () => {
+    console.log(`🚀 [SOCKET.IO] Server đang lắng nghe tại cổng ${PORT}`);
+    console.log(`🌐 [CORS] Cho phép các nguồn: ${process.env.CORS_ORIGINS}`);
+  });
 }
 
 main().catch((err) => {
