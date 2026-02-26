@@ -63,7 +63,6 @@ exports.returnMedication = async (req, res) => {
     const { idPhieuKham, idPhieuThuoc } = req.params;
     const { quantity, reason, tenBenhNhan, maBenhNhan, tenThuoc } = req.body;
     const userId = req.user?.id;
-    console.log(tenThuoc);
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {

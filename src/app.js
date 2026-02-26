@@ -18,6 +18,7 @@ const io = new Server(server, {
 global._io = io;
 
 const medSplitRoutes = require("./routes/medSplit.routes");
+const noteRoutes = require("./routes/note.routes");
 const allowedOrigins = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
@@ -47,5 +48,6 @@ io.on("connection", (socket) => {
 
 app.use("/auth", require("./routes/auth.routes"));
 app.use("/api", medSplitRoutes);
+app.use("/api", noteRoutes); 
 
 module.exports = server;
