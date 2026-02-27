@@ -38,9 +38,11 @@ exports.login = async (req, res) => {
     return res.status(401).json({ message: "Invalid credentials" });
 
   let tenKhoa = null;
+  let idHis = null;
   if (user.idKhoa) {
-    const dept = await Department.findById(user.idKhoa).select("name");
+    const dept = await Department.findById(user.idKhoa).select("name idHis");
     tenKhoa = dept?.name ?? null;
+    idHis = dept?.idHis ?? null;
   }
 
   const accessToken = signAccessToken({
@@ -49,6 +51,7 @@ exports.login = async (req, res) => {
     role: user.role,
     idKhoa: user.idKhoa?.toString() ?? null,
     tenKhoa,
+    idHis
   });
 
   const refreshToken = signRefreshToken({ sub: user._id.toString() });
@@ -64,6 +67,7 @@ exports.login = async (req, res) => {
     name: user.fullName ?? user.username,
     idKhoa: user.idKhoa?.toString() ?? null,
     tenKhoa,
+    idHis
   });
 };
 

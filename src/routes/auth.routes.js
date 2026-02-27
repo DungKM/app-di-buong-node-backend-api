@@ -28,7 +28,6 @@ router.route("/users")
   .post(authRequired, requireRoles("admin"), validate(createUserSchema), authController.createUser);
 
 router.route("/users/:id")
-  // Đã chuyển thành PATCH để khớp với Frontend
   .patch(authRequired, requireRoles("admin"), validate(updateUserSchema), authController.updateUser);
 
 router.patch("/users/:id/status", 
