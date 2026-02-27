@@ -62,47 +62,58 @@ exports.returnMedication = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
     const { quantity, reason, tenBenhNhan, maBenhNhan, tenThuoc } = req.body;
+
+    const userId = req.user?.id || req.user?.sub;
+    const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa;
+
+    const safeTen = tenBenhNhan || "Bệnh nhân";
+    const safeMa = maBenhNhan || "N/A";
+    const safeThuoc = tenThuoc || "Thuốc";
+    const safeQty = quantity || 0;
+    const safeReason = reason || "";
+
     const qs = new URLSearchParams({
-      maBenhNhan: maBenhNhan || "",
-      tenBenhNhan: tenBenhNhan || "",
+      maBenhNhan: safeMa,
+      tenBenhNhan: safeTen,
     }).toString();
 
     const redirectUrl = `/medication/${idPhieuKham}?${qs}`;
-    const userId = req.user?.id || req.user?.sub;
+
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
         $push: {
-          returnHistory: { quantity, reason, returnedBy: userId, returnedAt: new Date() }
+          returnHistory: { quantity: safeQty, reason: safeReason, returnedBy: userId, returnedAt: new Date() },
         },
-        $set: { updatedBy: userId }
+        $set: { updatedBy: userId },
       },
       { new: true }
     );
 
-    const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa;
+    if (!updated) return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
 
     const notiPayload = {
       type: "RETURN",
       idPhieuKham,
       idPhieuThuoc,
-      tenBenhNhan: tenBenhNhan || "Bệnh nhân",
-      maBenhNhan: maBenhNhan || "N/A",
-      tenThuoc: tenThuoc || "Thuốc",
-      soLuongTra: quantity || 0,
-      reason: reason || "", 
-      url: redirectUrl, // 👈 thêm dòng này
-      time: new Date(),
+      tenBenhNhan: safeTen,
+      maBenhNhan: safeMa,
+      tenThuoc: safeThuoc,
+      soLuongTra: safeQty,
+      reason: safeReason,
+      url: redirectUrl,
     };
+
     if (idKhoaRoom) {
       const noti = await Notification.create({
         idKhoa: idKhoaRoom,
         type: "RETURN",
         title: "Trả thuốc",
-        body: `BN ${notiPayload.tenBenhNhan} trả ${notiPayload.soLuongTra} ${notiPayload.tenThuoc}`,
+        body: `BN ${safeTen} trả ${safeQty} ${safeThuoc}`,
         payload: notiPayload,
         createdBy: userId || null,
       });
+
       if (global._io) {
         global._io.to(idKhoaRoom).emit("new_notification", {
           _id: noti._id,
