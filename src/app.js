@@ -25,8 +25,6 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// ✅ Express 5: không dùng app.options("*", ...)
-// ✅ Handle preflight OPTIONS cho mọi route
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     return cors(corsOptions)(req, res, next);
@@ -56,9 +54,11 @@ io.on("connection", (socket) => {
 
 const medSplitRoutes = require("./routes/medSplit.routes");
 const noteRoutes = require("./routes/note.routes");
+const notiRoutes = require("./routes/notification.routes");
 
 app.use("/auth", require("./routes/auth.routes"));
 app.use("/api", medSplitRoutes);
 app.use("/api", noteRoutes);
+app.use("/api", notiRoutes);
 
 module.exports = server;

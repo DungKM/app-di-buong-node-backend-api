@@ -1,4 +1,5 @@
 const MedShiftSplit = require("../models/MedShiftSplit");
+const Notification = require("../models/Notification");
 
 exports.list = async (req, res) => {
   try {
@@ -57,12 +58,17 @@ exports.confirmUsage = async (req, res) => {
   }
 };
 
-// PATCH Trả thuốc (Hủy số lượng kèm lý do)
 exports.returnMedication = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
     const { quantity, reason, tenBenhNhan, maBenhNhan, tenThuoc } = req.body;
-    const userId = req.user?.id;
+    const qs = new URLSearchParams({
+      maBenhNhan: maBenhNhan || "",
+      tenBenhNhan: tenBenhNhan || "",
+    }).toString();
+
+    const redirectUrl = `/medication/${idPhieuKham}?${qs}`;
+    const userId = req.user?.id || req.user?.sub;
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
@@ -74,20 +80,37 @@ exports.returnMedication = async (req, res) => {
       { new: true }
     );
 
-    // ✅ Emit realtime (room = khoa)
-    const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa; // tùy bạn attach ở middleware
-    if (global._io && idKhoaRoom) {
-      global._io.to(idKhoaRoom).emit("new_notification", {
+    const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa;
+
+    const notiPayload = {
+      type: "RETURN",
+      idPhieuKham,
+      idPhieuThuoc,
+      tenBenhNhan: tenBenhNhan || "Bệnh nhân",
+      maBenhNhan: maBenhNhan || "N/A",
+      tenThuoc: tenThuoc || "Thuốc",
+      soLuongTra: quantity || 0,
+      reason: reason || "", 
+      url: redirectUrl, // 👈 thêm dòng này
+      time: new Date(),
+    };
+    if (idKhoaRoom) {
+      const noti = await Notification.create({
+        idKhoa: idKhoaRoom,
         type: "RETURN",
-        idPhieuKham,
-        idPhieuThuoc,
-        tenBenhNhan: tenBenhNhan || "Bệnh nhân",
-        maBenhNhan: maBenhNhan || "N/A",
-        tenThuoc: tenThuoc || "Thuốc",
-        soLuongTra: quantity || 0,
-        reason: reason || "",
-        time: new Date(),
+        title: "Trả thuốc",
+        body: `BN ${notiPayload.tenBenhNhan} trả ${notiPayload.soLuongTra} ${notiPayload.tenThuoc}`,
+        payload: notiPayload,
+        createdBy: userId || null,
       });
+      if (global._io) {
+        global._io.to(idKhoaRoom).emit("new_notification", {
+          _id: noti._id,
+          ...notiPayload,
+          createdAt: noti.createdAt,
+          read: false,
+        });
+      }
     }
 
     return res.json(updated);
@@ -96,7 +119,6 @@ exports.returnMedication = async (req, res) => {
   }
 };
 
-// PUT save batch nhiều thuốc (Giữ nguyên logic cũ nhưng thêm status)
 exports.saveBatch = async (req, res) => {
   const { idPhieuKham } = req.params;
   const { items } = req.body;
