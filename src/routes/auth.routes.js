@@ -43,6 +43,7 @@ router.post("/users/:id/reset-password",
   validate(resetPasswordSchema), 
   authController.resetPassword
 );
+router.post("/users/import", authRequired, requireRoles("admin"), authController.importUsers);
 
 // --- 3. DEPARTMENT MANAGEMENT (Admin Only) ---
 router.route("/departments")

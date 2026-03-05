@@ -216,20 +216,126 @@ exports.resetPassword = async (req, res) => {
   try {
     const { id } = req.params;
     const { newPassword } = req.body;
-    const user = await User.findByPk(id);
+
+    const user = await User.findById(id);
     if (!user) {
-      return res.status(404).json({ success: false, message: "Không tìm thấy người dùng" });
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy người dùng"
+      });
     }
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(newPassword, salt);
+    user.passwordHash = passwordHash;
+    user.refreshTokens = [];
+    await user.save();
 
-    await user.update({ passwordHash });
-    if (user.refreshTokens) {
-      await user.update({ refreshTokens: [] });
-    }
-    res.json({ success: true, message: "Mật khẩu đã được đặt lại thành công" });
+    res.json({
+      success: true,
+      message: "Mật khẩu đã được đặt lại thành công"
+    });
+
   } catch (error) {
     console.error("Reset Password Error:", error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+exports.importUsers = async (req, res) => {
+  try {
+    const { users } = req.body;
+
+    if (!Array.isArray(users) || users.length === 0) {
+      return res.status(400).json({ success: false, message: "Danh sách users không hợp lệ" });
+    }
+
+    // Lấy danh sách idKhoa (có thể là idHis GUID hoặc ObjectId)
+    const idKhoaValues = [...new Set(users.map(u => (u.idKhoa || "").toString().trim()).filter(Boolean))];
+
+    // Map nhanh idHis -> _id
+    const depts = await Department.find({ idHis: { $in: idKhoaValues } }).select("_id idHis");
+    const mapIdHisToObjectId = new Map(depts.map(d => [String(d.idHis).toUpperCase(), d._id]));
+
+    const ops = [];
+    const errors = [];
+
+    for (let i = 0; i < users.length; i++) {
+      const u = users[i] || {};
+      const username = String(u.username || "").trim().toLowerCase();
+      const role = String(u.role || "nurse").trim().toLowerCase();
+
+      if (!username) {
+        errors.push({ row: i + 2, message: "Thiếu username" });
+        continue;
+      }
+
+      if (!["admin", "doctor", "nurse"].includes(role)) {
+        errors.push({ row: i + 2, username, message: `Role không hợp lệ: ${role}` });
+        continue;
+      }
+
+      // password mặc định admin123 nếu không gửi
+      const rawPassword = String(u.password || "admin123");
+      const passwordHash = await hashPassword(rawPassword);
+
+      // isActive mặc định true
+      const isActive = u.isActive === false ? false : true;
+
+      // idKhoa: ưu tiên map theo idHis GUID (đang dùng sẵn trong codebase)
+      // Nếu muốn cho phép truyền ObjectId thẳng thì sẽ xử lý thêm ở dưới
+      let finalIdKhoa = null;
+      const idKhoa = (u.idKhoa || "").toString().trim();
+      if (idKhoa) {
+        const key = idKhoa.toUpperCase();
+        if (mapIdHisToObjectId.has(key)) {
+          finalIdKhoa = mapIdHisToObjectId.get(key);
+        } else {
+          // Nếu excel đang truyền ObjectId (24 hex) thì cho set thẳng
+          // (không bắt buộc, nhưng giúp bạn linh hoạt)
+          const mongoose = require("mongoose");
+          if (mongoose.Types.ObjectId.isValid(idKhoa)) {
+            finalIdKhoa = idKhoa;
+          } else {
+            // Không tìm thấy khoa theo idHis
+            errors.push({ row: i + 2, username, message: `Không tìm thấy khoa theo idKhoa/idHis: ${idKhoa}` });
+            continue;
+          }
+        }
+      }
+
+      ops.push({
+        updateOne: {
+          filter: { username },
+          update: {
+            $set: { role, idKhoa: finalIdKhoa, isActive },
+            // chỉ set password khi tạo mới (tránh reset pass khi import lại)
+            $setOnInsert: { passwordHash }
+          },
+          upsert: true
+        }
+      });
+    }
+
+    if (ops.length === 0) {
+      return res.status(400).json({ success: false, message: "Không có dòng hợp lệ để import", errors });
+    }
+
+    const result = await User.bulkWrite(ops, { ordered: false });
+
+    return res.json({
+      success: true,
+      message: "Import thành công",
+      data: {
+        inserted: result.upsertedCount || 0,
+        updated: result.modifiedCount || 0
+      },
+      errors
+    });
+  } catch (error) {
+    console.error("Import Users Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
