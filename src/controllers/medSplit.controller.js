@@ -1,5 +1,7 @@
 const MedShiftSplit = require("../models/MedShiftSplit");
 const Notification = require("../models/Notification");
+const { suggestSplitFromInstruction } = require("../services/medSplitSuggestion.service");
+
 
 exports.list = async (req, res) => {
   try {
@@ -11,7 +13,13 @@ exports.list = async (req, res) => {
       map[r.idPhieuThuoc] = {
         splits: r.splits,
         status: r.status,
-        returnHistory: r.returnHistory
+        returnHistory: r.returnHistory,
+        splitSource: r.splitSource,
+        confidence: r.confidence,
+        needsReview: r.needsReview,
+        reason: r.reason,
+        rawInstruction: r.rawInstruction,
+        parsedInstruction: r.parsedInstruction,
       };
     });
 
@@ -22,23 +30,31 @@ exports.list = async (req, res) => {
 };
 
 exports.saveOne = async (req, res) => {
-  const { idPhieuKham, idPhieuThuoc } = req.params;
-  const { splits } = req.body;
-  const userId = req.user?.id;
+  try {
+    const { idPhieuKham, idPhieuThuoc } = req.params;
+    const { splits } = req.body;
+    const userId = req.user?.id;
 
-  const updated = await MedShiftSplit.findOneAndUpdate(
-    { idPhieuKham, idPhieuThuoc },
-    {
-      $set: {
-        splits,
-        updatedBy: userId,
-        status: "Chờ dùng thuốc"
-      }
-    },
-    { upsert: true, new: true }
-  );
+    const updated = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $set: {
+          splits,
+          updatedBy: userId,
+          status: "Chờ dùng thuốc",
+          splitSource: "MANUAL",
+          confidence: 1,
+          needsReview: false,
+          reason: null,
+        }
+      },
+      { upsert: true, new: true }
+    );
 
-  return res.json(updated);
+    return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
 };
 
 exports.confirmUsage = async (req, res) => {
@@ -131,25 +147,39 @@ exports.returnMedication = async (req, res) => {
 };
 
 exports.saveBatch = async (req, res) => {
-  const { idPhieuKham } = req.params;
-  const { items } = req.body;
-  const userId = req.user?.id;
+  try {
+    const { idPhieuKham } = req.params;
+    const { items } = req.body;
+    const userId = req.user?.id;
 
-  for (const it of items) {
-    await MedShiftSplit.findOneAndUpdate(
-      { idPhieuKham, idPhieuThuoc: it.idPhieuThuoc },
-      {
-        $set: {
-          splits: it.splits,
-          updatedBy: userId,
-          status: "Chờ dùng thuốc"
-        }
-      },
-      { upsert: true, new: true }
-    );
+    const ops = items.map((it) => ({
+      updateOne: {
+        filter: { idPhieuKham, idPhieuThuoc: it.idPhieuThuoc },
+        update: {
+          $set: {
+            splits: it.splits,
+            updatedBy: userId,
+            status: "Chờ dùng thuốc",
+            splitSource: it.splitSource || "MANUAL",
+            confidence: it.confidence ?? 1,
+            needsReview: it.needsReview ?? false,
+            reason: it.reason ?? null,
+            rawInstruction: it.rawInstruction ?? null,
+            parsedInstruction: it.parsedInstruction ?? null,
+          }
+        },
+        upsert: true,
+      }
+    }));
+
+    if (ops.length) {
+      await MedShiftSplit.bulkWrite(ops);
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
-
-  return res.json({ ok: true });
 };
 
 exports.traThuoc = async (req, res) => {
@@ -171,5 +201,94 @@ exports.traThuoc = async (req, res) => {
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+exports.autoSplitAll = async (req, res) => {
+  try {
+    const { idPhieuKham } = req.params;
+    const userId = req.user?.id;
+    const { items = [] } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: "Không có dữ liệu đơn thuốc để tự động chia" });
+    }
+
+    const existingRows = await MedShiftSplit.find({ idPhieuKham }).lean();
+    const existingMap = new Map(existingRows.map((row) => [row.idPhieuThuoc, row]));
+
+    const ops = [];
+    let autoSuccess = 0;
+    let needsReview = 0;
+    let failed = 0;
+    let skippedManual = 0;
+
+    for (const med of items) {
+      const existing = existingMap.get(String(med.idPhieuThuoc));
+
+      if (existing?.splitSource === "MANUAL") {
+        skippedManual++;
+        continue;
+      }
+
+      const suggestion = suggestSplitFromInstruction({
+        lieuDung: med.lieuDung,
+        maxQty: med.maxQty,
+      });
+
+      const total =
+        suggestion.splits.MORNING +
+        suggestion.splits.NOON +
+        suggestion.splits.AFTERNOON +
+        suggestion.splits.NIGHT;
+
+      if (total <= 0) {
+        failed++;
+      } else if (suggestion.needsReview) {
+        needsReview++;
+      } else {
+        autoSuccess++;
+      }
+
+      ops.push({
+        updateOne: {
+          filter: {
+            idPhieuKham,
+            idPhieuThuoc: String(med.idPhieuThuoc),
+          },
+          update: {
+            $set: {
+              splits: suggestion.splits,
+              updatedBy: userId,
+              status: "Chờ dùng thuốc",
+              splitSource: suggestion.source,
+              confidence: suggestion.confidence,
+              needsReview: total <= 0 ? true : suggestion.needsReview,
+              reason: suggestion.reason,
+              rawInstruction: med.lieuDung || null,
+              parsedInstruction: suggestion.parsedInstruction,
+            },
+          },
+          upsert: true,
+        },
+      });
+    }
+
+    if (ops.length > 0) {
+      await MedShiftSplit.bulkWrite(ops);
+    }
+
+    return res.json({
+      ok: true,
+      summary: {
+        total: items.length,
+        autoSuccess,
+        needsReview,
+        failed,
+        skippedManual,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 };

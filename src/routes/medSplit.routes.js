@@ -10,6 +10,12 @@ router.get(
   medSplitController.list
 );
 
+router.post(
+  "/encounters/:idPhieuKham/med-splits/auto-split",
+  authRequired,
+  medSplitController.autoSplitAll
+);
+
 router.put(
   "/encounters/:idPhieuKham/med-splits/:idPhieuThuoc",
   authRequired,
@@ -33,4 +39,5 @@ router.patch(
   authRequired,
   medSplitController.confirmUsage
 );
+
 module.exports = router;

@@ -14,8 +14,8 @@ const MedShiftSplitSchema = new mongoose.Schema(
 
     returnHistory: [
       {
-        quantity: { type: Number, required: true }, 
-        reason: { type: String, required: true },  
+        quantity: { type: Number, required: true },
+        reason: { type: String, required: true },
         status: { type: String, default: "Đã trả thuốc" },
         returnedAt: { type: Date, default: Date.now },
         returnedBy: { type: String },
@@ -24,6 +24,39 @@ const MedShiftSplitSchema = new mongoose.Schema(
 
     status: { type: String, default: "Chờ dùng thuốc" },
     updatedBy: { type: String, default: null },
+
+    splitSource: {
+      type: String,
+      enum: ["MANUAL", "RULE", "AI"],
+      default: "MANUAL",
+    },
+
+    confidence: {
+      type: Number,
+      default: 1,
+      min: 0,
+      max: 1,
+    },
+
+    needsReview: {
+      type: Boolean,
+      default: false,
+    },
+
+    reason: {
+      type: String,
+      default: null,
+    },
+
+    rawInstruction: {
+      type: String,
+      default: null,
+    },
+
+    parsedInstruction: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -31,3 +64,4 @@ const MedShiftSplitSchema = new mongoose.Schema(
 MedShiftSplitSchema.index({ idPhieuKham: 1, idPhieuThuoc: 1 }, { unique: true });
 
 module.exports = mongoose.model("MedShiftSplit", MedShiftSplitSchema);
+
