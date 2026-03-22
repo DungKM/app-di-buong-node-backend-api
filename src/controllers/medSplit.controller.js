@@ -77,7 +77,15 @@ exports.confirmUsage = async (req, res) => {
 exports.returnMedication = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
-    const { quantity, reason, tenBenhNhan, maBenhNhan, tenThuoc } = req.body;
+    const {
+      quantity,
+      reason,
+      tenBenhNhan,
+      maBenhNhan,
+      tenThuoc,
+      idBenhAn,
+      shift
+    } = req.body;
 
     const userId = req.user?.id || req.user?.sub;
     const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa;
@@ -91,15 +99,16 @@ exports.returnMedication = async (req, res) => {
     const qs = new URLSearchParams({
       maBenhNhan: safeMa,
       tenBenhNhan: safeTen,
+      idPhieuKham,
     }).toString();
 
-    const redirectUrl = `/medication/${idPhieuKham}?${qs}`;
+    const redirectUrl = `/medication/${idBenhAn}?${qs}`;
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
         $push: {
-          returnHistory: { quantity: safeQty, reason: safeReason, returnedBy: userId, returnedAt: new Date() },
+          returnHistory: { quantity: safeQty, reason: safeReason, shift, returnedBy: userId, returnedAt: new Date() },
         },
         $set: { updatedBy: userId },
       },

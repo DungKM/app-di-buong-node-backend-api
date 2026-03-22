@@ -6,5 +6,6 @@ router.get("/notifications", authRequired, noti.list);
 router.patch("/notifications/:id/read", authRequired, noti.markRead);
 router.patch("/notifications/read-all", authRequired, noti.markAllRead);
 router.delete("/notifications", authRequired, noti.clearAll);
+router.get("/notifications/returns-by-date", authRequired, noti.getReturnsByDate);
 
 module.exports = router;

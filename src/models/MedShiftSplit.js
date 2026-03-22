@@ -16,6 +16,11 @@ const MedShiftSplitSchema = new mongoose.Schema(
       {
         quantity: { type: Number, required: true },
         reason: { type: String, required: true },
+        shift: {
+          type: String,
+          enum: ["MORNING", "NOON", "AFTERNOON", "NIGHT"],
+          required: true,
+        },
         status: { type: String, default: "Đã trả thuốc" },
         returnedAt: { type: Date, default: Date.now },
         returnedBy: { type: String },
