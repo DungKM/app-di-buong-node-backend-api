@@ -20,6 +20,7 @@ exports.list = async (req, res) => {
         reason: r.reason,
         rawInstruction: r.rawInstruction,
         parsedInstruction: r.parsedInstruction,
+        confirmedShifts: r.confirmedShifts ?? [],
       };
     });
 
@@ -58,20 +59,30 @@ exports.saveOne = async (req, res) => {
 };
 
 exports.confirmUsage = async (req, res) => {
-  try {
-    const { idPhieuKham, idPhieuThuoc } = req.params;
-    const userId = req.user?.id;
+  const { idPhieuKham, idPhieuThuoc } = req.params;
+  const { shift } = req.body;
+  const userId = req.user?.id;
 
-    const updated = await MedShiftSplit.findOneAndUpdate(
-      { idPhieuKham, idPhieuThuoc },
-      { $set: { status: "Đã dùng thuốc", updatedBy: userId } },
-      { new: true }
-    );
+  console.log("=== confirmUsage ===");
+  console.log("body:", req.body);
+  console.log("shift:", shift);
 
-    return res.json(updated);
-  } catch (error) {
-    return res.status(500).json({ message: error.message });
-  }
+  // 👇 Thử tìm document trước xem có tồn tại không
+  const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+  console.log("existing doc:", existing);
+
+  const updated = await MedShiftSplit.findOneAndUpdate(
+    { idPhieuKham, idPhieuThuoc },
+    {
+      $addToSet: { confirmedShifts: shift },
+      $set: { updatedBy: userId },
+    },
+    { new: true }
+  );
+
+  console.log("updated:", JSON.stringify(updated, null, 2));
+
+  return res.json(updated);
 };
 
 exports.returnMedication = async (req, res) => {
