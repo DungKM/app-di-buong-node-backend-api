@@ -20,6 +20,7 @@ exports.list = async (req, res) => {
         reason: r.reason,
         rawInstruction: r.rawInstruction,
         parsedInstruction: r.parsedInstruction,
+        confirmedShifts: r.confirmedShifts ?? [],
       };
     });
 
@@ -58,20 +59,22 @@ exports.saveOne = async (req, res) => {
 };
 
 exports.confirmUsage = async (req, res) => {
-  try {
-    const { idPhieuKham, idPhieuThuoc } = req.params;
-    const userId = req.user?.id;
+  const { idPhieuKham, idPhieuThuoc } = req.params;
+  const { shift } = req.body;
+  const userId = req.user?.id;
+  // 👇 Thử tìm document trước xem có tồn tại không
+  const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
 
-    const updated = await MedShiftSplit.findOneAndUpdate(
-      { idPhieuKham, idPhieuThuoc },
-      { $set: { status: "Đã dùng thuốc", updatedBy: userId } },
-      { new: true }
-    );
+  const updated = await MedShiftSplit.findOneAndUpdate(
+    { idPhieuKham, idPhieuThuoc },
+    {
+      $addToSet: { confirmedShifts: shift },
+      $set: { updatedBy: userId },
+    },
+    { new: true }
+  );
 
-    return res.json(updated);
-  } catch (error) {
-    return res.status(500).json({ message: error.message });
-  }
+  return res.json(updated);
 };
 
 exports.returnMedication = async (req, res) => {
@@ -204,7 +207,6 @@ exports.traThuoc = async (req, res) => {
         soLuongTra: req.body.soLuongTra,
         time: new Date(),
       });
-      console.log("🚀 [EMIT] to room:", idKhoaRoom);
     }
 
     return res.json({ success: true });

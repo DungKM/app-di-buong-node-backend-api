@@ -11,7 +11,11 @@ const MedShiftSplitSchema = new mongoose.Schema(
       AFTERNOON: { type: Number, default: 0 },
       NIGHT: { type: Number, default: 0 },
     },
-
+    confirmedShifts: {
+      type: [String],
+      enum: ["MORNING", "NOON", "AFTERNOON", "NIGHT"],
+      default: [],
+    },
     returnHistory: [
       {
         quantity: { type: Number, required: true },
