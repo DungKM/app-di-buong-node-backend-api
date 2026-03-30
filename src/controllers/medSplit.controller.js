@@ -62,14 +62,8 @@ exports.confirmUsage = async (req, res) => {
   const { idPhieuKham, idPhieuThuoc } = req.params;
   const { shift } = req.body;
   const userId = req.user?.id;
-
-  console.log("=== confirmUsage ===");
-  console.log("body:", req.body);
-  console.log("shift:", shift);
-
   // 👇 Thử tìm document trước xem có tồn tại không
   const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
-  console.log("existing doc:", existing);
 
   const updated = await MedShiftSplit.findOneAndUpdate(
     { idPhieuKham, idPhieuThuoc },
@@ -79,8 +73,6 @@ exports.confirmUsage = async (req, res) => {
     },
     { new: true }
   );
-
-  console.log("updated:", JSON.stringify(updated, null, 2));
 
   return res.json(updated);
 };
@@ -215,7 +207,6 @@ exports.traThuoc = async (req, res) => {
         soLuongTra: req.body.soLuongTra,
         time: new Date(),
       });
-      console.log("🚀 [EMIT] to room:", idKhoaRoom);
     }
 
     return res.json({ success: true });
