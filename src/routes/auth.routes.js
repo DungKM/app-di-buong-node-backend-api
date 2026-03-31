@@ -39,7 +39,6 @@ router.patch("/users/:id/status",
 
 router.post("/users/:id/reset-password", 
   authRequired, 
-  requireRoles("admin"), 
   validate(resetPasswordSchema), 
   authController.resetPassword
 );
