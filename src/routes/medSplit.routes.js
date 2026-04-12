@@ -40,4 +40,10 @@ router.patch(
   medSplitController.confirmUsage
 );
 
+router.patch(
+  "/encounters/:idPhieuKham/med-splits/:idPhieuThuoc/unconfirm",
+  authRequired,
+  medSplitController.cancelConfirmedUsage
+);
+
 module.exports = router;

@@ -1,7 +1,23 @@
 const MedShiftSplit = require("../models/MedShiftSplit");
 const Notification = require("../models/Notification");
-const { suggestSplitFromInstruction } = require("../services/medSplitSuggestion.service");
+const User = require("../models/User");
+const {
+  suggestSplitFromInstruction,
+} = require("../services/medSplitSuggestion.service");
 
+const VALID_SHIFTS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
+
+const validateShift = (shift) => {
+  if (!shift) {
+    return "Thiếu ca dùng thuốc";
+  }
+
+  if (!VALID_SHIFTS.includes(shift)) {
+    return "Ca dùng thuốc không hợp lệ";
+  }
+
+  return null;
+};
 
 exports.list = async (req, res) => {
   try {
@@ -47,7 +63,7 @@ exports.saveOne = async (req, res) => {
           confidence: 1,
           needsReview: false,
           reason: null,
-        }
+        },
       },
       { upsert: true, new: true }
     );
@@ -59,22 +75,65 @@ exports.saveOne = async (req, res) => {
 };
 
 exports.confirmUsage = async (req, res) => {
-  const { idPhieuKham, idPhieuThuoc } = req.params;
-  const { shift } = req.body;
-  const userId = req.user?.id;
-  // 👇 Thử tìm document trước xem có tồn tại không
-  const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+  try {
+    const { idPhieuKham, idPhieuThuoc } = req.params;
+    const { shift } = req.body;
+    const userId = req.user?.id;
 
-  const updated = await MedShiftSplit.findOneAndUpdate(
-    { idPhieuKham, idPhieuThuoc },
-    {
-      $addToSet: { confirmedShifts: shift },
-      $set: { updatedBy: userId },
-    },
-    { new: true }
-  );
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
 
-  return res.json(updated);
+    const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+    if (!existing) {
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    }
+
+    const updated = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $addToSet: { confirmedShifts: shift },
+        $set: { updatedBy: userId },
+      },
+      { new: true }
+    );
+
+    return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+exports.cancelConfirmedUsage = async (req, res) => {
+  try {
+    const { idPhieuKham, idPhieuThuoc } = req.params;
+    const { shift } = req.body;
+    const userId = req.user?.id;
+
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
+
+    const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+    if (!existing) {
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    }
+
+    const updated = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $pull: { confirmedShifts: shift },
+        $set: { updatedBy: userId },
+      },
+      { new: true }
+    );
+
+    return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
 };
 
 exports.returnMedication = async (req, res) => {
@@ -87,7 +146,7 @@ exports.returnMedication = async (req, res) => {
       maBenhNhan,
       tenThuoc,
       idBenhAn,
-      shift
+      shift,
     } = req.body;
 
     const userId = req.user?.id || req.user?.sub;
@@ -111,14 +170,22 @@ exports.returnMedication = async (req, res) => {
       { idPhieuKham, idPhieuThuoc },
       {
         $push: {
-          returnHistory: { quantity: safeQty, reason: safeReason, shift, returnedBy: userId, returnedAt: new Date() },
+          returnHistory: {
+            quantity: safeQty,
+            reason: safeReason,
+            shift,
+            returnedBy: userId,
+            returnedAt: new Date(),
+          },
         },
         $set: { updatedBy: userId },
       },
       { new: true }
     );
 
-    if (!updated) return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    if (!updated) {
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    }
 
     const notiPayload = {
       type: "RETURN",
@@ -178,10 +245,10 @@ exports.saveBatch = async (req, res) => {
             reason: it.reason ?? null,
             rawInstruction: it.rawInstruction ?? null,
             parsedInstruction: it.parsedInstruction ?? null,
-          }
+          },
         },
         upsert: true,
-      }
+      },
     }));
 
     if (ops.length) {
@@ -222,7 +289,9 @@ exports.autoSplitAll = async (req, res) => {
     const { items = [] } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "Không có dữ liệu đơn thuốc để tự động chia" });
+      return res
+        .status(400)
+        .json({ message: "Không có dữ liệu đơn thuốc để tự động chia" });
     }
 
     const existingRows = await MedShiftSplit.find({ idPhieuKham }).lean();
