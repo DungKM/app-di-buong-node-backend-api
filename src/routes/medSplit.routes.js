@@ -41,6 +41,12 @@ router.patch(
 );
 
 router.patch(
+  "/encounters/:idPhieuKham/med-splits/confirm-all",
+  authRequired,
+  medSplitController.confirmAllUsage
+);
+
+router.patch(
   "/encounters/:idPhieuKham/med-splits/:idPhieuThuoc/unconfirm",
   authRequired,
   medSplitController.cancelConfirmedUsage

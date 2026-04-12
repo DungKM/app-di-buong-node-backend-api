@@ -6,6 +6,7 @@ const {
 } = require("../services/medSplitSuggestion.service");
 
 const VALID_SHIFTS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
+const SPLIT_FIELDS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
 
 const validateShift = (shift) => {
   if (!shift) {
@@ -17,6 +18,36 @@ const validateShift = (shift) => {
   }
 
   return null;
+};
+
+const normalizeSplitValue = (value) => {
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+
+  const normalized =
+    typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const normalizeSplits = (splits = {}) => {
+  const normalizedSplits = {};
+
+  for (const field of SPLIT_FIELDS) {
+    const normalizedValue = normalizeSplitValue(splits[field]);
+    if (normalizedValue === null) {
+      return null;
+    }
+
+    normalizedSplits[field] = normalizedValue;
+  }
+
+  return normalizedSplits;
 };
 
 exports.list = async (req, res) => {
@@ -51,12 +82,19 @@ exports.saveOne = async (req, res) => {
     const { idPhieuKham, idPhieuThuoc } = req.params;
     const { splits } = req.body;
     const userId = req.user?.id;
+    const normalizedSplits = normalizeSplits(splits);
+
+    if (!normalizedSplits) {
+      return res.status(400).json({
+        message: "Liều chia không hợp lệ, cho phép số nguyên hoặc số lẻ >= 0",
+      });
+    }
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
         $set: {
-          splits,
+          splits: normalizedSplits,
           updatedBy: userId,
           status: "Chờ dùng thuốc",
           splitSource: "MANUAL",
@@ -100,6 +138,55 @@ exports.confirmUsage = async (req, res) => {
     );
 
     return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+exports.confirmAllUsage = async (req, res) => {
+  try {
+    const { idPhieuKham } = req.params;
+    const { shift } = req.body;
+    const userId = req.user?.id;
+
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
+
+    const rows = await MedShiftSplit.find({ idPhieuKham }).select(
+      "_id confirmedShifts"
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "KhÃ´ng tÃ¬m tháº¥y phiáº¿u thuá»‘c" });
+    }
+
+    const pendingIds = rows
+      .filter((row) => !(row.confirmedShifts ?? []).includes(shift))
+      .map((row) => row._id);
+
+    let modifiedCount = 0;
+    if (pendingIds.length > 0) {
+      const result = await MedShiftSplit.updateMany(
+        { _id: { $in: pendingIds } },
+        {
+          $addToSet: { confirmedShifts: shift },
+          $set: { updatedBy: userId },
+        }
+      );
+
+      modifiedCount = result.modifiedCount ?? 0;
+    }
+
+    return res.json({
+      ok: true,
+      idPhieuKham,
+      shift,
+      total: rows.length,
+      modifiedCount,
+      alreadyConfirmedCount: rows.length - pendingIds.length,
+    });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -231,7 +318,26 @@ exports.saveBatch = async (req, res) => {
     const { items } = req.body;
     const userId = req.user?.id;
 
-    const ops = items.map((it) => ({
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ message: "Danh sách thuốc không hợp lệ" });
+    }
+
+    const normalizedItems = [];
+    for (const it of items) {
+      const normalizedSplits = normalizeSplits(it.splits);
+      if (!normalizedSplits) {
+        return res.status(400).json({
+          message: `Liều chia không hợp lệ cho thuốc ${it.idPhieuThuoc}`,
+        });
+      }
+
+      normalizedItems.push({
+        ...it,
+        splits: normalizedSplits,
+      });
+    }
+
+    const ops = normalizedItems.map((it) => ({
       updateOne: {
         filter: { idPhieuKham, idPhieuThuoc: it.idPhieuThuoc },
         update: {
