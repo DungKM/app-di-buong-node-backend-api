@@ -1,5 +1,6 @@
 const Department = require('../models/Department');
 const User = require('../models/User'); 
+const mongoose = require('mongoose');
 
 exports.getAllDepartments = async (req, res) => {
   try {
@@ -8,6 +9,43 @@ exports.getAllDepartments = async (req, res) => {
   } catch (error) {
     console.error("Error fetching departments:", error);
     res.status(500).json({ success: false, message: "Lỗi máy chủ khi lấy danh sách khoa/phòng." });
+  }
+};
+
+exports.getDepartmentHisById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "id khoa không hợp lệ."
+      });
+    }
+
+    const department = await Department.findById(id).select("idHis name type");
+    if (!department) {
+      return res.status(404).json({
+        success: false,
+        message: "Không tìm thấy khoa/phòng."
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        idKhoa: department._id,
+        idHis: department.idHis ?? null,
+        name: department.name,
+        type: department.type,
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching department idHis:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Lỗi máy chủ khi lấy idHis của khoa/phòng."
+    });
   }
 };
 

@@ -49,6 +49,12 @@ router.route("/departments")
   .get(authRequired, requireRoles("admin"), departmentController.getAllDepartments)
   .post(authRequired, requireRoles("admin"), departmentController.createDepartment);
 
+router.get(
+  "/departments/:id/id-his",
+  authRequired,
+  departmentController.getDepartmentHisById
+);
+
 router.route("/departments/:id")
   .patch(authRequired, requireRoles("admin"), departmentController.updateDepartment)
   .delete(authRequired, requireRoles("admin"), departmentController.deleteDepartment);
