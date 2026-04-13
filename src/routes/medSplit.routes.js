@@ -5,6 +5,12 @@ const medSplitController = require("../controllers/medSplit.controller");
 const { authRequired } = require("../middlewares/auth.middleware");
 
 router.get(
+  "/medication-confirmations/history",
+  authRequired,
+  medSplitController.getMedicationConfirmationHistory
+);
+
+router.get(
   "/encounters/:idPhieuKham/med-splits",
   authRequired,
   medSplitController.list
