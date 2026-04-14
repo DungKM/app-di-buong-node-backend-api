@@ -1,7 +1,144 @@
 const MedShiftSplit = require("../models/MedShiftSplit");
+const MedicationOrder = require("../models/MedicationOrder");
 const Notification = require("../models/Notification");
-const { suggestSplitFromInstruction } = require("../services/medSplitSuggestion.service");
+const Department = require("../models/Department");
+const User = require("../models/User");
+const {
+  suggestSplitFromInstruction,
+} = require("../services/medSplitSuggestion.service");
 
+const VALID_SHIFTS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
+const SPLIT_FIELDS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+const validateShift = (shift) => {
+  if (!shift) {
+    return "Thiếu ca dùng thuốc";
+  }
+
+  if (!VALID_SHIFTS.includes(shift)) {
+    return "Ca dùng thuốc không hợp lệ";
+  }
+
+  return null;
+};
+
+const normalizeSplitValue = (value) => {
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+
+  const normalized =
+    typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
+
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const normalizeSplits = (splits = {}) => {
+  const normalizedSplits = {};
+
+  for (const field of SPLIT_FIELDS) {
+    const normalizedValue = normalizeSplitValue(splits[field]);
+    if (normalizedValue === null) {
+      return null;
+    }
+
+    normalizedSplits[field] = normalizedValue;
+  }
+
+  return normalizedSplits;
+};
+
+const pickFirstDefined = (source, keys) => {
+  for (const key of keys) {
+    if (source?.[key] !== undefined && source?.[key] !== null && source?.[key] !== "") {
+      return source[key];
+    }
+  }
+
+  return null;
+};
+
+const normalizeString = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+};
+
+const getMedicationOrderField = (medOrder, keys) =>
+  normalizeString(pickFirstDefined(medOrder, keys));
+
+const resolveDepartmentId = async (rawIdKhoa) => {
+  if (!rawIdKhoa) return null;
+
+  const normalizedId = rawIdKhoa.toString().trim();
+  if (!normalizedId) return null;
+
+  const mongoose = require("mongoose");
+  if (mongoose.Types.ObjectId.isValid(normalizedId)) {
+    return normalizedId;
+  }
+
+  const department = await Department.findOne({ idHis: normalizedId })
+    .select("_id")
+    .lean();
+
+  return department?._id?.toString() ?? null;
+};
+
+const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => {
+  const quantityFromPayload = pickFirstDefined(payload, [
+    "soLuongDung",
+    "SoLuongDung",
+    "quantity",
+    "Quantity",
+    "soLuong",
+    "SoLuong",
+  ]);
+  const fallbackQuantity = splitRow?.splits?.[shift];
+  const normalizedQuantity =
+    quantityFromPayload !== undefined &&
+    quantityFromPayload !== null &&
+    quantityFromPayload !== ""
+      ? Number(quantityFromPayload)
+      : Number(fallbackQuantity ?? 0);
+
+  return {
+    idKhoa: req.user?.idKhoa?.toString?.() || req.user?.idKhoa || null,
+    idBenhNhan: normalizeString(pickFirstDefined(payload, ["idBenhNhan", "IdBenhNhan"])),
+    tenBenhNhan: normalizeString(
+      pickFirstDefined(payload, ["tenBenhNhan", "hoTenBenhNhan", "HoTenBenhNhan", "TenBenhNhan"])
+    ),
+    maBenhNhan: normalizeString(
+      pickFirstDefined(payload, ["maBenhNhan", "MaBenhNhan", "patientCode", "PatientCode"])
+    ),
+    tuoi: normalizeString(pickFirstDefined(payload, ["tuoi", "Tuoi", "age", "Age"])),
+    tenThuoc: normalizeString(
+      pickFirstDefined(payload, ["tenThuoc", "TenThuoc", "medicineName", "MedicineName"]) ??
+        getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"])
+    ),
+    hamLuong: normalizeString(
+      pickFirstDefined(payload, ["hamLuong", "HamLuong"]) ??
+        getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"])
+    ),
+    loaiThuoc: normalizeString(
+      pickFirstDefined(payload, ["loaiThuoc", "LoaiThuoc"]) ??
+        getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"])
+    ),
+    donVi: normalizeString(
+      pickFirstDefined(payload, ["donVi", "DonVi"]) ??
+        getMedicationOrderField(medOrder, ["donVi", "DonVi"])
+    ),
+    soLuongDung: Number.isFinite(normalizedQuantity) ? normalizedQuantity : 0,
+    shift,
+    confirmedAt: new Date(),
+    confirmedBy: req.user?.id || req.user?.sub || null,
+  };
+};
 
 exports.list = async (req, res) => {
   try {
@@ -30,24 +167,134 @@ exports.list = async (req, res) => {
   }
 };
 
+exports.getMedicationConfirmationHistory = async (req, res) => {
+  try {
+    const date = String(req.query.date || "").trim();
+    const rawIdKhoa =
+      req.query.idKhoa?.toString?.().trim() ||
+      req.user?.idKhoa?.toString?.() ||
+      req.user?.idKhoa ||
+      "";
+
+    if (!date) {
+      return res.status(400).json({ message: "Thiếu tham số date" });
+    }
+
+    if (!DATE_PATTERN.test(date)) {
+      return res.status(400).json({ message: "date không đúng định dạng YYYY-MM-DD" });
+    }
+
+    const idKhoa = await resolveDepartmentId(rawIdKhoa);
+    if (rawIdKhoa && !idKhoa) {
+      return res.status(404).json({ message: "Không tìm thấy khoa theo idKhoa" });
+    }
+
+    const start = new Date(`${date}T00:00:00.000+07:00`);
+    const end = new Date(`${date}T23:59:59.999+07:00`);
+
+    const historyFilter = {
+      confirmedAt: { $gte: start, $lte: end },
+    };
+
+    if (idKhoa) {
+      historyFilter.idKhoa = idKhoa;
+    }
+
+    const rows = await MedShiftSplit.find({
+      confirmationHistory: { $elemMatch: historyFilter },
+    })
+      .select("idPhieuKham idPhieuThuoc confirmationHistory")
+      .lean();
+
+    const medOrders = rows.length
+      ? await MedicationOrder.find({
+          idPhieuKham: { $in: [...new Set(rows.map((row) => row.idPhieuKham))] },
+          idPhieuThuoc: { $in: [...new Set(rows.map((row) => row.idPhieuThuoc))] },
+        })
+          .select("idPhieuKham idPhieuThuoc tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
+          .lean()
+      : [];
+
+    const medOrderMap = new Map(
+      medOrders.map((row) => [`${row.idPhieuKham}__${row.idPhieuThuoc}`, row])
+    );
+
+    const items = rows
+      .flatMap((row) =>
+        (row.confirmationHistory || [])
+          .filter((entry) => {
+            const confirmedAt = new Date(entry.confirmedAt);
+            if (Number.isNaN(confirmedAt.getTime())) return false;
+            if (confirmedAt < start || confirmedAt > end) return false;
+            if (idKhoa && entry.idKhoa !== idKhoa) return false;
+            return true;
+          })
+          .map((entry) => {
+            const medOrder = medOrderMap.get(`${row.idPhieuKham}__${row.idPhieuThuoc}`);
+
+            return {
+              idPhieuKham: row.idPhieuKham,
+              idPhieuThuoc: row.idPhieuThuoc,
+              idBenhNhan: normalizeString(entry.idBenhNhan),
+              tenBenhNhan: normalizeString(entry.tenBenhNhan) ?? "",
+              maBenhNhan: normalizeString(entry.maBenhNhan),
+              tuoi: normalizeString(entry.tuoi),
+              tenThuoc:
+                normalizeString(entry.tenThuoc) ??
+                getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"]) ??
+                "",
+              hamLuong:
+                normalizeString(entry.hamLuong) ??
+                getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"]),
+              loaiThuoc:
+                normalizeString(entry.loaiThuoc) ??
+                getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"]),
+              donVi:
+                normalizeString(entry.donVi) ??
+                getMedicationOrderField(medOrder, ["donVi", "DonVi"]),
+              soLuongDung: entry.soLuongDung ?? 0,
+              confirmedAt: entry.confirmedAt ?? null,
+              shift: entry.shift ?? null,
+            };
+          })
+      )
+      .sort((a, b) => new Date(b.confirmedAt) - new Date(a.confirmedAt));
+
+    return res.json({
+      date,
+      idKhoa: idKhoa ?? null,
+      items,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 exports.saveOne = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
     const { splits } = req.body;
-    const userId = req.user?.id;
+    const userId = req.user?.id || req.user?.sub;
+    const normalizedSplits = normalizeSplits(splits);
+
+    if (!normalizedSplits) {
+      return res.status(400).json({
+        message: "Liều chia không hợp lệ, cho phép số nguyên hoặc số lẻ >= 0",
+      });
+    }
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
         $set: {
-          splits,
+          splits: normalizedSplits,
           updatedBy: userId,
           status: "Chờ dùng thuốc",
           splitSource: "MANUAL",
           confidence: 1,
           needsReview: false,
           reason: null,
-        }
+        },
       },
       { upsert: true, new: true }
     );
@@ -59,22 +306,172 @@ exports.saveOne = async (req, res) => {
 };
 
 exports.confirmUsage = async (req, res) => {
-  const { idPhieuKham, idPhieuThuoc } = req.params;
-  const { shift } = req.body;
-  const userId = req.user?.id;
-  // 👇 Thử tìm document trước xem có tồn tại không
-  const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+  try {
+    const { idPhieuKham, idPhieuThuoc } = req.params;
+    const { shift } = req.body;
+    const userId = req.user?.id || req.user?.sub;
 
-  const updated = await MedShiftSplit.findOneAndUpdate(
-    { idPhieuKham, idPhieuThuoc },
-    {
-      $addToSet: { confirmedShifts: shift },
-      $set: { updatedBy: userId },
-    },
-    { new: true }
-  );
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
 
-  return res.json(updated);
+    const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+    if (!existing) {
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    }
+
+    const alreadyConfirmed = (existing.confirmedShifts ?? []).includes(shift);
+    if (alreadyConfirmed) {
+      return res.json(existing);
+    }
+
+    const medOrder = await MedicationOrder.findOne({ idPhieuKham, idPhieuThuoc })
+      .select("tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
+      .lean();
+
+    const updated = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $addToSet: { confirmedShifts: shift },
+        $push: {
+          confirmationHistory: buildHistoryEntry({
+            req,
+            shift,
+            splitRow: existing,
+            medOrder,
+            payload: req.body,
+          }),
+        },
+        $set: { updatedBy: userId },
+      },
+      { new: true }
+    );
+
+    return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+exports.confirmAllUsage = async (req, res) => {
+  try {
+    const { idPhieuKham } = req.params;
+    const { shift, items = [] } = req.body;
+    const userId = req.user?.id || req.user?.sub;
+
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
+
+    const rows = await MedShiftSplit.find({ idPhieuKham }).select(
+      "_id idPhieuThuoc confirmedShifts splits"
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ message: "KhÃ´ng tÃ¬m tháº¥y phiáº¿u thuá»‘c" });
+    }
+
+    const pendingRows = rows.filter((row) => !(row.confirmedShifts ?? []).includes(shift));
+    const pendingIds = pendingRows.map((row) => row._id);
+
+    const itemMap = new Map(
+      Array.isArray(items)
+        ? items
+            .filter((item) => item?.idPhieuThuoc)
+            .map((item) => [String(item.idPhieuThuoc), item])
+        : []
+    );
+
+    const medOrders = pendingRows.length
+      ? await MedicationOrder.find({
+          idPhieuKham,
+          idPhieuThuoc: { $in: pendingRows.map((row) => row.idPhieuThuoc) },
+        })
+          .select("idPhieuThuoc tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
+          .lean()
+      : [];
+
+    const medOrderMap = new Map(medOrders.map((row) => [String(row.idPhieuThuoc), row]));
+
+    let modifiedCount = 0;
+    if (pendingIds.length > 0) {
+      const sharedPayload = { ...(req.body || {}) };
+
+      const result = await MedShiftSplit.bulkWrite(
+        pendingRows.map((row) => {
+          const payload = {
+            ...sharedPayload,
+            ...(itemMap.get(String(row.idPhieuThuoc)) || {}),
+          };
+
+          return {
+            updateOne: {
+              filter: { _id: row._id },
+              update: {
+                $addToSet: { confirmedShifts: shift },
+                $push: {
+                  confirmationHistory: buildHistoryEntry({
+                    req,
+                    shift,
+                    splitRow: row,
+                    medOrder: medOrderMap.get(String(row.idPhieuThuoc)),
+                    payload,
+                  }),
+                },
+                $set: { updatedBy: userId },
+              },
+            },
+          };
+        })
+      );
+
+      modifiedCount = result.modifiedCount ?? result.nModified ?? pendingIds.length;
+    }
+
+    return res.json({
+      ok: true,
+      idPhieuKham,
+      shift,
+      total: rows.length,
+      modifiedCount,
+      alreadyConfirmedCount: rows.length - pendingIds.length,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+exports.cancelConfirmedUsage = async (req, res) => {
+  try {
+    const { idPhieuKham, idPhieuThuoc } = req.params;
+    const { shift } = req.body;
+    const userId = req.user?.id || req.user?.sub;
+
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
+
+    const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+    if (!existing) {
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    }
+
+    const updated = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $pull: { confirmedShifts: shift },
+        $set: { updatedBy: userId },
+      },
+      { new: true }
+    );
+
+    return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
 };
 
 exports.returnMedication = async (req, res) => {
@@ -87,7 +484,7 @@ exports.returnMedication = async (req, res) => {
       maBenhNhan,
       tenThuoc,
       idBenhAn,
-      shift
+      shift,
     } = req.body;
 
     const userId = req.user?.id || req.user?.sub;
@@ -111,14 +508,22 @@ exports.returnMedication = async (req, res) => {
       { idPhieuKham, idPhieuThuoc },
       {
         $push: {
-          returnHistory: { quantity: safeQty, reason: safeReason, shift, returnedBy: userId, returnedAt: new Date() },
+          returnHistory: {
+            quantity: safeQty,
+            reason: safeReason,
+            shift,
+            returnedBy: userId,
+            returnedAt: new Date(),
+          },
         },
         $set: { updatedBy: userId },
       },
       { new: true }
     );
 
-    if (!updated) return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    if (!updated) {
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
+    }
 
     const notiPayload = {
       type: "RETURN",
@@ -164,7 +569,26 @@ exports.saveBatch = async (req, res) => {
     const { items } = req.body;
     const userId = req.user?.id;
 
-    const ops = items.map((it) => ({
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ message: "Danh sách thuốc không hợp lệ" });
+    }
+
+    const normalizedItems = [];
+    for (const it of items) {
+      const normalizedSplits = normalizeSplits(it.splits);
+      if (!normalizedSplits) {
+        return res.status(400).json({
+          message: `Liều chia không hợp lệ cho thuốc ${it.idPhieuThuoc}`,
+        });
+      }
+
+      normalizedItems.push({
+        ...it,
+        splits: normalizedSplits,
+      });
+    }
+
+    const ops = normalizedItems.map((it) => ({
       updateOne: {
         filter: { idPhieuKham, idPhieuThuoc: it.idPhieuThuoc },
         update: {
@@ -178,10 +602,10 @@ exports.saveBatch = async (req, res) => {
             reason: it.reason ?? null,
             rawInstruction: it.rawInstruction ?? null,
             parsedInstruction: it.parsedInstruction ?? null,
-          }
+          },
         },
         upsert: true,
-      }
+      },
     }));
 
     if (ops.length) {
@@ -222,7 +646,9 @@ exports.autoSplitAll = async (req, res) => {
     const { items = [] } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: "Không có dữ liệu đơn thuốc để tự động chia" });
+      return res
+        .status(400)
+        .json({ message: "Không có dữ liệu đơn thuốc để tự động chia" });
     }
 
     const existingRows = await MedShiftSplit.find({ idPhieuKham }).lean();

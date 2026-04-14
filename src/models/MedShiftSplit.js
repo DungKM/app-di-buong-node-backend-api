@@ -16,6 +16,27 @@ const MedShiftSplitSchema = new mongoose.Schema(
       enum: ["MORNING", "NOON", "AFTERNOON", "NIGHT"],
       default: [],
     },
+    confirmationHistory: [
+      {
+        idKhoa: { type: String, default: null },
+        idBenhNhan: { type: String, default: null },
+        tenBenhNhan: { type: String, default: null },
+        maBenhNhan: { type: String, default: null },
+        tuoi: { type: String, default: null },
+        tenThuoc: { type: String, default: null },
+        hamLuong: { type: String, default: null },
+        loaiThuoc: { type: String, default: null },
+        donVi: { type: String, default: null },
+        soLuongDung: { type: Number, default: 0 },
+        shift: {
+          type: String,
+          enum: ["MORNING", "NOON", "AFTERNOON", "NIGHT"],
+          required: true,
+        },
+        confirmedAt: { type: Date, default: Date.now },
+        confirmedBy: { type: String, default: null },
+      }
+    ],
     returnHistory: [
       {
         quantity: { type: Number, required: true },
@@ -71,6 +92,7 @@ const MedShiftSplitSchema = new mongoose.Schema(
 );
 
 MedShiftSplitSchema.index({ idPhieuKham: 1, idPhieuThuoc: 1 }, { unique: true });
+MedShiftSplitSchema.index({ "confirmationHistory.idKhoa": 1, "confirmationHistory.confirmedAt": -1 });
 
 module.exports = mongoose.model("MedShiftSplit", MedShiftSplitSchema);
 

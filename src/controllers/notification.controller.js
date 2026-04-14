@@ -92,8 +92,8 @@ exports.getReturnsByDate = async (req, res) => {
       return res.status(400).json({ message: "Thiếu tham số date" });
     }
 
-    const start = new Date(`${date}T00:00:00.000Z`);
-    const end = new Date(`${date}T23:59:59.999Z`);
+    const start = new Date(`${date}T00:00:00.000+07:00`);
+    const end = new Date(`${date}T23:59:59.999+07:00`);
 
     const rows = await Notification.find({
       idKhoa,
