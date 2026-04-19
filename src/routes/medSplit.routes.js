@@ -11,6 +11,12 @@ router.get(
 );
 
 router.get(
+  "/medication-list",
+  authRequired,
+  medSplitController.getMedicationList
+);
+
+router.get(
   "/encounters/:idPhieuKham/med-splits",
   authRequired,
   medSplitController.list
