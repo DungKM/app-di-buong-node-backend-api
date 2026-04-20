@@ -6,6 +6,14 @@ const User = require("../models/User");
 const {
   suggestSplitFromInstruction,
 } = require("../services/medSplitSuggestion.service");
+const {
+  getBaseUrl,
+  getCacheTtlMs,
+  getBuongPhong,
+  getDonThuocByPhieuKham,
+  getDsLanKham,
+  mapWithConcurrency,
+} = require("../services/quocOaiDibuong.service");
 
 const VALID_SHIFTS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
 const SPLIT_FIELDS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
@@ -90,6 +98,181 @@ const resolveDepartmentId = async (rawIdKhoa) => {
   return department?._id?.toString() ?? null;
 };
 
+const resolveDepartmentContext = async (rawIdKhoa, fallbackIdHis) => {
+  const normalizedId = normalizeString(rawIdKhoa);
+  const normalizedFallbackHis = normalizeString(fallbackIdHis);
+
+  if (!normalizedId) {
+    if (!normalizedFallbackHis) {
+      return null;
+    }
+
+    const fallbackDepartment = await Department.findOne({ idHis: normalizedFallbackHis })
+      .select("_id idHis")
+      .lean();
+
+    return {
+      departmentId: fallbackDepartment?._id?.toString() ?? null,
+      idHis: normalizedFallbackHis,
+    };
+  }
+
+  const mongoose = require("mongoose");
+
+  if (mongoose.Types.ObjectId.isValid(normalizedId)) {
+    const department = await Department.findById(normalizedId).select("_id idHis").lean();
+    if (!department) {
+      return null;
+    }
+
+    return {
+      departmentId: department._id.toString(),
+      idHis: normalizeString(department.idHis),
+    };
+  }
+
+  const department = await Department.findOne({ idHis: normalizedId }).select("_id idHis").lean();
+
+  return {
+    departmentId: department?._id?.toString() ?? null,
+    idHis: normalizeString(department?.idHis) ?? normalizedId,
+  };
+};
+
+const getCurrentDateInBangkok = () => {
+  const now = new Date();
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+  return new Date(utcMs + 7 * 60 * 60000).toISOString().slice(0, 10);
+};
+
+const collectBenhAnIds = (wardData) => {
+  const ids = new Set();
+
+  wardData?.DSPhong?.forEach((phong) => {
+    phong?.DsGiuong?.forEach((giuong) => {
+      giuong?.DsBenhAn?.forEach((benhAn) => {
+        const idBenhAn = normalizeString(benhAn?.IdBenhAn);
+        if (idBenhAn) {
+          ids.add(idBenhAn);
+        }
+      });
+    });
+  });
+
+  return Array.from(ids).sort();
+};
+
+const collectLatestPhieuKhamIds = (wardData) => {
+  const ids = new Set();
+
+  wardData?.DSPhong?.forEach((phong) => {
+    phong?.DsGiuong?.forEach((giuong) => {
+      giuong?.DsBenhAn?.forEach((benhAn) => {
+        const idPhieuKham = normalizeString(benhAn?.IdPhieuKhamMoiNhat);
+        if (idPhieuKham) {
+          ids.add(idPhieuKham);
+        }
+      });
+    });
+  });
+
+  return Array.from(ids).sort();
+};
+
+const buildMedSplitsMapByVisit = (rows = []) => {
+  const map = {};
+
+  rows.forEach((row) => {
+    if (!row?.idPhieuKham || !row?.idPhieuThuoc) {
+      return;
+    }
+
+    if (!map[row.idPhieuKham]) {
+      map[row.idPhieuKham] = {};
+    }
+
+    map[row.idPhieuKham][row.idPhieuThuoc] = {
+      splits: row.splits,
+      status: row.status,
+      returnHistory: row.returnHistory,
+      splitSource: row.splitSource,
+      confidence: row.confidence,
+      needsReview: row.needsReview,
+      reason: row.reason,
+      rawInstruction: row.rawInstruction,
+      parsedInstruction: row.parsedInstruction,
+      confirmedShifts: row.confirmedShifts ?? [],
+    };
+  });
+
+  return map;
+};
+
+const buildShiftStats = (meds = [], splits = {}) => {
+  const stats = {
+    MORNING: { used: 0, pending: 0, returned: 0, total: 0 },
+    NOON: { used: 0, pending: 0, returned: 0, total: 0 },
+    AFTERNOON: { used: 0, pending: 0, returned: 0, total: 0 },
+    NIGHT: { used: 0, pending: 0, returned: 0, total: 0 },
+  };
+
+  VALID_SHIFTS.forEach((shift) => {
+    stats[shift] = stats[shift] || { used: 0, pending: 0, returned: 0, total: 0 };
+  });
+
+  meds.forEach((med) => {
+    const idPhieuThuoc = normalizeString(med?.IdPhieuThuoc);
+    if (!idPhieuThuoc) {
+      return;
+    }
+
+    const splitInfo = splits[idPhieuThuoc];
+
+    VALID_SHIFTS.forEach((shift) => {
+      const quantityInShift = Number(splitInfo?.splits?.[shift] ?? 0);
+      if (quantityInShift <= 0) {
+        return;
+      }
+
+      stats[shift].total += quantityInShift;
+
+      if (splitInfo?.confirmedShifts?.includes?.(shift)) {
+        stats[shift].used += quantityInShift;
+        return;
+      }
+
+      const returned = Array.isArray(splitInfo?.returnHistory)
+        ? splitInfo.returnHistory.reduce((sum, entry) => {
+            return entry?.shift === shift ? sum + Number(entry.quantity || 0) : sum;
+          }, 0)
+        : 0;
+
+      stats[shift].returned += returned;
+      stats[shift].pending += Math.max(0, quantityInShift - returned);
+    });
+  });
+
+  return stats;
+};
+
+const buildTotalByShift = (wardLayout = []) => {
+  const result = {};
+
+  wardLayout.forEach((room) => {
+    room?.beds?.forEach((bed) => {
+      bed?.visits?.forEach((visit) => {
+        const shifts = visit?.marSummary?.shifts || {};
+        VALID_SHIFTS.forEach((shift) => {
+          const total = Number(shifts?.[shift]?.total ?? 0);
+          result[shift] = (result[shift] || 0) + total;
+        });
+      });
+    });
+  });
+
+  return result;
+};
+
 const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => {
   const quantityFromPayload = pickFirstDefined(payload, [
     "soLuongDung",
@@ -162,6 +345,165 @@ exports.list = async (req, res) => {
     });
 
     return res.json({ idPhieuKham, splits: map });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getMedicationList = async (req, res) => {
+  try {
+    const todayKey = getCurrentDateInBangkok();
+    const requestedDate = normalizeString(req.query.date) || todayKey;
+    if (!DATE_PATTERN.test(requestedDate)) {
+      return res.status(400).json({ message: "date must use YYYY-MM-DD format" });
+    }
+
+    const rawIdKhoa =
+      req.query.idKhoa?.toString?.().trim() ||
+      req.user?.idHis?.toString?.().trim() ||
+      req.user?.idKhoa?.toString?.().trim() ||
+      "";
+
+    const departmentContext = await resolveDepartmentContext(rawIdKhoa, req.user?.idHis);
+    if (!departmentContext?.idHis) {
+      return res.status(400).json({ message: "Missing or invalid idKhoa" });
+    }
+
+    const wardData = await getBuongPhong(departmentContext.idHis);
+    const benhAnIds = collectBenhAnIds(wardData);
+    const latestPhieuKhamIds = collectLatestPhieuKhamIds(wardData);
+    const shouldResolveEncountersByDate = requestedDate !== todayKey;
+
+    let lanKhamByBenhAn = {};
+    let lanKhamErrors = [];
+
+    if (shouldResolveEncountersByDate && benhAnIds.length > 0) {
+      const lanKhamResult = await mapWithConcurrency(benhAnIds, async (idBenhAn) => {
+        const list = await getDsLanKham(idBenhAn);
+        const matched = list.find((item) => item?.NgayThucKham?.startsWith?.(requestedDate));
+        return [idBenhAn, normalizeString(matched?.Id)];
+      });
+
+      lanKhamByBenhAn = Object.fromEntries(
+        lanKhamResult.results.filter((entry) => Array.isArray(entry) && entry[0])
+      );
+      lanKhamErrors = lanKhamResult.errors;
+    }
+
+    const phieuKhamIds = shouldResolveEncountersByDate
+      ? Array.from(
+          new Set(
+            Object.values(lanKhamByBenhAn)
+              .map((value) => normalizeString(value))
+              .filter(Boolean)
+          )
+        ).sort()
+      : latestPhieuKhamIds;
+
+    let medsByVisit = {};
+    let medicationErrors = [];
+
+    if (phieuKhamIds.length > 0) {
+      const medicationResult = await mapWithConcurrency(phieuKhamIds, async (idPhieuKham) => {
+        const meds = await getDonThuocByPhieuKham(idPhieuKham);
+        return [idPhieuKham, Array.isArray(meds) ? meds : []];
+      });
+
+      medsByVisit = Object.fromEntries(
+        medicationResult.results.filter((entry) => Array.isArray(entry) && entry[0])
+      );
+      medicationErrors = medicationResult.errors;
+    }
+
+    const splitRows = phieuKhamIds.length
+      ? await MedShiftSplit.find({
+          idPhieuKham: { $in: phieuKhamIds },
+        })
+          .select(
+            "idPhieuKham idPhieuThuoc splits status returnHistory splitSource confidence needsReview reason rawInstruction parsedInstruction confirmedShifts"
+          )
+          .lean()
+      : [];
+
+    const medSplitsByVisit = buildMedSplitsMapByVisit(splitRows);
+    const shiftsByVisit = {};
+
+    phieuKhamIds.forEach((idPhieuKham) => {
+      shiftsByVisit[idPhieuKham] = buildShiftStats(
+        medsByVisit[idPhieuKham] || [],
+        medSplitsByVisit[idPhieuKham] || {}
+      );
+    });
+
+    const wardLayout = Array.isArray(wardData?.DSPhong)
+      ? wardData.DSPhong.map((phong) => ({
+          room: normalizeString(phong?.Ma) || "--",
+          beds: Array.isArray(phong?.DsGiuong)
+            ? phong.DsGiuong.map((giuong) => {
+                const bedCode = normalizeString(giuong?.MaGiuong) || "--";
+                const visits = Array.isArray(giuong?.DsBenhAn)
+                  ? giuong.DsBenhAn.map((benhAn) => {
+                      const idBenhAn = normalizeString(benhAn?.IdBenhAn) || "";
+                      const latestIdPhieuKham = normalizeString(benhAn?.IdPhieuKhamMoiNhat) || "";
+                      const resolvedIdPhieuKham = shouldResolveEncountersByDate
+                        ? normalizeString(lanKhamByBenhAn[idBenhAn]) || latestIdPhieuKham
+                        : latestIdPhieuKham;
+                      const meds = medsByVisit[resolvedIdPhieuKham] || [];
+                      const shifts =
+                        shiftsByVisit[resolvedIdPhieuKham] ||
+                        buildShiftStats(meds, medSplitsByVisit[resolvedIdPhieuKham] || {});
+
+                      return {
+                        id: idBenhAn,
+                        patientName: normalizeString(benhAn?.HoTenBenhNhan) || "",
+                        patientCode: normalizeString(benhAn?.MaBenhNhan) || "",
+                        patientGender: normalizeString(benhAn?.GioiTinh),
+                        patientAge: normalizeString(benhAn?.Tuoi),
+                        room: normalizeString(phong?.Ma) || "--",
+                        bed: bedCode,
+                        idPhieuKham: resolvedIdPhieuKham,
+                        marSummary: { shifts },
+                      };
+                    })
+                  : [];
+
+                return {
+                  code: bedCode,
+                  visits,
+                  isOccupied: visits.length > 0,
+                };
+              })
+            : [],
+        }))
+      : [];
+
+    const totalByShift = buildTotalByShift(wardLayout);
+    const upstreamErrors = [...lanKhamErrors, ...medicationErrors];
+
+    return res.json({
+      date: requestedDate,
+      idKhoa: departmentContext.idHis,
+      departmentId: departmentContext.departmentId,
+      shouldResolveEncountersByDate,
+      source: {
+        upstreamBaseUrl: getBaseUrl(),
+        cacheTtlMs: getCacheTtlMs(),
+      },
+      wardData,
+      wardLayout,
+      benhAnIds,
+      latestPhieuKhamIds,
+      phieuKhamIds,
+      lanKhamByBenhAn,
+      medsByVisit,
+      medSplitsByVisit,
+      shiftsByVisit,
+      totalByShift,
+      meta: {
+        partial: upstreamErrors.length > 0,
+        upstreamErrors,
+      },
+    });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
