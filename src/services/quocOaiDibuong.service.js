@@ -14,7 +14,7 @@ function getNumericEnv(name, fallback) {
 }
 
 function getBaseUrl() {
-  const raw = String(process.env.QUOCOAI_DIBUONG_BASE_URL || DEFAULT_BASE_URL).trim();
+  const raw = String(process.env.DIBUONG_BASE_URL || DEFAULT_BASE_URL).trim();
   return raw.replace(/\/+$/, "");
 }
 
@@ -31,7 +31,7 @@ function getMaxConcurrency() {
 }
 
 function shouldRejectUnauthorized() {
-  const raw = String(process.env.QUOCOAI_DIBUONG_REJECT_UNAUTHORIZED || "true")
+  const raw = String(process.env.DIBUONG_REJECT_UNAUTHORIZED || "true")
     .trim()
     .toLowerCase();
 
