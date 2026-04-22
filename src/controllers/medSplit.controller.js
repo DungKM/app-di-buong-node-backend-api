@@ -145,6 +145,15 @@ const getCurrentDateInBangkok = () => {
   return new Date(utcMs + 7 * 60 * 60000).toISOString().slice(0, 10);
 };
 
+const normalizeEncounterIds = (ids = []) =>
+  Array.from(
+    new Set(
+      ids
+        .map((value) => normalizeString(value))
+        .filter(Boolean)
+    )
+  );
+
 const collectBenhAnIds = (wardData) => {
   const ids = new Set();
 
@@ -162,21 +171,27 @@ const collectBenhAnIds = (wardData) => {
   return Array.from(ids).sort();
 };
 
-const collectLatestPhieuKhamIds = (wardData) => {
-  const ids = new Set();
+const collectLatestPhieuKhamByBenhAn = (wardData) => {
+  const map = {};
 
   wardData?.DSPhong?.forEach((phong) => {
     phong?.DsGiuong?.forEach((giuong) => {
       giuong?.DsBenhAn?.forEach((benhAn) => {
+        const idBenhAn = normalizeString(benhAn?.IdBenhAn);
         const idPhieuKham = normalizeString(benhAn?.IdPhieuKhamMoiNhat);
-        if (idPhieuKham) {
-          ids.add(idPhieuKham);
+
+        if (idBenhAn && idPhieuKham) {
+          map[idBenhAn] = idPhieuKham;
         }
       });
     });
   });
 
-  return Array.from(ids).sort();
+  return map;
+};
+
+const collectLatestPhieuKhamIds = (wardData) => {
+  return Array.from(new Set(Object.values(collectLatestPhieuKhamByBenhAn(wardData)))).sort();
 };
 
 const buildMedSplitsMapByVisit = (rows = []) => {
@@ -253,6 +268,37 @@ const buildShiftStats = (meds = [], splits = {}) => {
   });
 
   return stats;
+};
+
+const mergeShiftStats = (statsList = []) => {
+  const merged = {
+    MORNING: { used: 0, pending: 0, returned: 0, total: 0 },
+    NOON: { used: 0, pending: 0, returned: 0, total: 0 },
+    AFTERNOON: { used: 0, pending: 0, returned: 0, total: 0 },
+    NIGHT: { used: 0, pending: 0, returned: 0, total: 0 },
+  };
+
+  statsList.forEach((stats) => {
+    VALID_SHIFTS.forEach((shift) => {
+      merged[shift].used += Number(stats?.[shift]?.used ?? 0);
+      merged[shift].pending += Number(stats?.[shift]?.pending ?? 0);
+      merged[shift].returned += Number(stats?.[shift]?.returned ?? 0);
+      merged[shift].total += Number(stats?.[shift]?.total ?? 0);
+    });
+  });
+
+  return merged;
+};
+
+const pickPrimaryEncounterId = (encounterIds = [], fallbackId = null) => {
+  const normalizedIds = normalizeEncounterIds(encounterIds);
+  const normalizedFallbackId = normalizeString(fallbackId);
+
+  if (normalizedFallbackId && normalizedIds.includes(normalizedFallbackId)) {
+    return normalizedFallbackId;
+  }
+
+  return normalizedIds[0] || normalizedFallbackId || "";
 };
 
 const buildTotalByShift = (wardLayout = []) => {
@@ -371,21 +417,38 @@ exports.getMedicationList = async (req, res) => {
 
     const wardData = await getBuongPhong(departmentContext.idHis);
     const benhAnIds = collectBenhAnIds(wardData);
+    const latestPhieuKhamByBenhAn = collectLatestPhieuKhamByBenhAn(wardData);
     const latestPhieuKhamIds = collectLatestPhieuKhamIds(wardData);
-    const shouldResolveEncountersByDate = requestedDate !== todayKey;
+    const shouldResolveEncountersByDate = benhAnIds.length > 0;
 
     let lanKhamByBenhAn = {};
+    let lanKhamIdsByBenhAn = {};
     let lanKhamErrors = [];
 
-    if (shouldResolveEncountersByDate && benhAnIds.length > 0) {
+    if (shouldResolveEncountersByDate) {
       const lanKhamResult = await mapWithConcurrency(benhAnIds, async (idBenhAn) => {
         const list = await getDsLanKham(idBenhAn);
-        const matched = list.find((item) => item?.NgayThucKham?.startsWith?.(requestedDate));
-        return [idBenhAn, normalizeString(matched?.Id)];
+        const matchedIds = normalizeEncounterIds(
+          list
+            .filter((item) => item?.NgayThucKham?.startsWith?.(requestedDate))
+            .map((item) => item?.Id)
+        );
+
+        return [idBenhAn, matchedIds];
       });
 
+      lanKhamIdsByBenhAn = Object.fromEntries(
+        lanKhamResult.results
+          .filter((entry) => Array.isArray(entry) && entry[0])
+          .map(([idBenhAn, encounterIds]) => [idBenhAn, normalizeEncounterIds(encounterIds)])
+      );
       lanKhamByBenhAn = Object.fromEntries(
-        lanKhamResult.results.filter((entry) => Array.isArray(entry) && entry[0])
+        Object.entries(lanKhamIdsByBenhAn)
+          .map(([idBenhAn, encounterIds]) => [
+            idBenhAn,
+            pickPrimaryEncounterId(encounterIds, latestPhieuKhamByBenhAn[idBenhAn]),
+          ])
+          .filter(([, idPhieuKham]) => idPhieuKham)
       );
       lanKhamErrors = lanKhamResult.errors;
     }
@@ -393,7 +456,8 @@ exports.getMedicationList = async (req, res) => {
     const phieuKhamIds = shouldResolveEncountersByDate
       ? Array.from(
           new Set(
-            Object.values(lanKhamByBenhAn)
+            Object.values(lanKhamIdsByBenhAn)
+              .flat()
               .map((value) => normalizeString(value))
               .filter(Boolean)
           )
@@ -444,14 +508,24 @@ exports.getMedicationList = async (req, res) => {
                 const visits = Array.isArray(giuong?.DsBenhAn)
                   ? giuong.DsBenhAn.map((benhAn) => {
                       const idBenhAn = normalizeString(benhAn?.IdBenhAn) || "";
-                      const latestIdPhieuKham = normalizeString(benhAn?.IdPhieuKhamMoiNhat) || "";
-                      const resolvedIdPhieuKham = shouldResolveEncountersByDate
-                        ? normalizeString(lanKhamByBenhAn[idBenhAn]) || latestIdPhieuKham
-                        : latestIdPhieuKham;
-                      const meds = medsByVisit[resolvedIdPhieuKham] || [];
-                      const shifts =
-                        shiftsByVisit[resolvedIdPhieuKham] ||
-                        buildShiftStats(meds, medSplitsByVisit[resolvedIdPhieuKham] || {});
+                      const latestIdPhieuKham = latestPhieuKhamByBenhAn[idBenhAn] || "";
+                      const resolvedIdPhieuKhamIds = shouldResolveEncountersByDate
+                        ? normalizeEncounterIds(lanKhamIdsByBenhAn[idBenhAn] || [])
+                        : normalizeEncounterIds([latestIdPhieuKham]);
+                      const resolvedIdPhieuKham = pickPrimaryEncounterId(
+                        resolvedIdPhieuKhamIds,
+                        latestIdPhieuKham
+                      );
+                      const shifts = mergeShiftStats(
+                        resolvedIdPhieuKhamIds.map(
+                          (idPhieuKham) =>
+                            shiftsByVisit[idPhieuKham] ||
+                            buildShiftStats(
+                              medsByVisit[idPhieuKham] || [],
+                              medSplitsByVisit[idPhieuKham] || {}
+                            )
+                        )
+                      );
 
                       return {
                         id: idBenhAn,
@@ -462,6 +536,7 @@ exports.getMedicationList = async (req, res) => {
                         room: normalizeString(phong?.Ma) || "--",
                         bed: bedCode,
                         idPhieuKham: resolvedIdPhieuKham,
+                        idPhieuKhamIds: resolvedIdPhieuKhamIds,
                         marSummary: { shifts },
                       };
                     })
@@ -495,6 +570,7 @@ exports.getMedicationList = async (req, res) => {
       latestPhieuKhamIds,
       phieuKhamIds,
       lanKhamByBenhAn,
+      lanKhamIdsByBenhAn,
       medsByVisit,
       medSplitsByVisit,
       shiftsByVisit,
