@@ -258,8 +258,8 @@ const buildShiftStats = (meds = [], splits = {}) => {
 
       const returned = Array.isArray(splitInfo?.returnHistory)
         ? splitInfo.returnHistory.reduce((sum, entry) => {
-            return entry?.shift === shift ? sum + Number(entry.quantity || 0) : sum;
-          }, 0)
+          return entry?.shift === shift ? sum + Number(entry.quantity || 0) : sum;
+        }, 0)
         : 0;
 
       stats[shift].returned += returned;
@@ -331,8 +331,8 @@ const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => 
   const fallbackQuantity = splitRow?.splits?.[shift];
   const normalizedQuantity =
     quantityFromPayload !== undefined &&
-    quantityFromPayload !== null &&
-    quantityFromPayload !== ""
+      quantityFromPayload !== null &&
+      quantityFromPayload !== ""
       ? Number(quantityFromPayload)
       : Number(fallbackQuantity ?? 0);
 
@@ -348,19 +348,19 @@ const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => 
     tuoi: normalizeString(pickFirstDefined(payload, ["tuoi", "Tuoi", "age", "Age"])),
     tenThuoc: normalizeString(
       pickFirstDefined(payload, ["tenThuoc", "TenThuoc", "medicineName", "MedicineName"]) ??
-        getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"])
+      getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"])
     ),
     hamLuong: normalizeString(
       pickFirstDefined(payload, ["hamLuong", "HamLuong"]) ??
-        getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"])
+      getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"])
     ),
     loaiThuoc: normalizeString(
       pickFirstDefined(payload, ["loaiThuoc", "LoaiThuoc"]) ??
-        getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"])
+      getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"])
     ),
     donVi: normalizeString(
       pickFirstDefined(payload, ["donVi", "DonVi"]) ??
-        getMedicationOrderField(medOrder, ["donVi", "DonVi"])
+      getMedicationOrderField(medOrder, ["donVi", "DonVi"])
     ),
     soLuongDung: Number.isFinite(normalizedQuantity) ? normalizedQuantity : 0,
     shift,
@@ -400,8 +400,17 @@ exports.getMedicationList = async (req, res) => {
   try {
     const todayKey = getCurrentDateInBangkok();
     const requestedDate = normalizeString(req.query.date) || todayKey;
+
     if (!DATE_PATTERN.test(requestedDate)) {
       return res.status(400).json({ message: "date must use YYYY-MM-DD format" });
+    }
+
+    const mode = normalizeString(req.query.mode) || "full";
+
+    if (!["layout", "full"].includes(mode)) {
+      return res.status(400).json({
+        message: "mode must be layout or full",
+      });
     }
 
     const rawIdKhoa =
@@ -411,6 +420,7 @@ exports.getMedicationList = async (req, res) => {
       "";
 
     const departmentContext = await resolveDepartmentContext(rawIdKhoa, req.user?.idHis);
+
     if (!departmentContext?.idHis) {
       return res.status(400).json({ message: "Missing or invalid idKhoa" });
     }
@@ -420,6 +430,91 @@ exports.getMedicationList = async (req, res) => {
     const latestPhieuKhamByBenhAn = collectLatestPhieuKhamByBenhAn(wardData);
     const latestPhieuKhamIds = collectLatestPhieuKhamIds(wardData);
     const shouldResolveEncountersByDate = benhAnIds.length > 0;
+
+    const emptyShiftStats = () => ({
+      MORNING: { used: 0, pending: 0, returned: 0, total: 0 },
+      NOON: { used: 0, pending: 0, returned: 0, total: 0 },
+      AFTERNOON: { used: 0, pending: 0, returned: 0, total: 0 },
+      NIGHT: { used: 0, pending: 0, returned: 0, total: 0 },
+    });
+
+    const basicWardLayout = Array.isArray(wardData?.DSPhong)
+      ? wardData.DSPhong.map((phong) => ({
+        room: normalizeString(phong?.Ma) || "--",
+        beds: Array.isArray(phong?.DsGiuong)
+          ? phong.DsGiuong.map((giuong) => {
+            const bedCode = normalizeString(giuong?.MaGiuong) || "--";
+
+            const visits = Array.isArray(giuong?.DsBenhAn)
+              ? giuong.DsBenhAn.map((benhAn) => {
+                const idBenhAn = normalizeString(benhAn?.IdBenhAn) || "";
+                const latestIdPhieuKham = latestPhieuKhamByBenhAn[idBenhAn] || "";
+
+                return {
+                  id: idBenhAn,
+                  patientName: normalizeString(benhAn?.HoTenBenhNhan) || "",
+                  patientCode: normalizeString(benhAn?.MaBenhNhan) || "",
+                  patientGender: normalizeString(benhAn?.GioiTinh),
+                  patientAge: normalizeString(benhAn?.Tuoi),
+                  room: normalizeString(phong?.Ma) || "--",
+                  bed: bedCode,
+
+                  // Dữ liệu tạm từ getBuongPhong, chưa resolve lần khám theo ngày
+                  idPhieuKham: latestIdPhieuKham,
+                  idPhieuKhamIds: latestIdPhieuKham ? [latestIdPhieuKham] : [],
+
+                  // Full mode sẽ cập nhật lại thống kê thuốc
+                  marSummary: {
+                    loading: true,
+                    shifts: emptyShiftStats(),
+                  },
+                };
+              })
+              : [];
+
+            return {
+              code: bedCode,
+              visits,
+              isOccupied: visits.length > 0,
+            };
+          })
+          : [],
+      }))
+      : [];
+
+    if (mode === "layout") {
+      return res.json({
+        date: requestedDate,
+        mode,
+        idKhoa: departmentContext.idHis,
+        departmentId: departmentContext.departmentId,
+        shouldResolveEncountersByDate: false,
+        source: {
+          upstreamBaseUrl: getBaseUrl(),
+          cacheTtlMs: getCacheTtlMs(),
+        },
+        wardData,
+        wardLayout: basicWardLayout,
+        benhAnIds,
+        latestPhieuKhamIds,
+
+        // Chưa load trong mode layout
+        phieuKhamIds: latestPhieuKhamIds,
+        lanKhamByBenhAn: {},
+        lanKhamIdsByBenhAn: {},
+        medsByVisit: {},
+        medSplitsByVisit: {},
+        shiftsByVisit: {},
+        totalByShift: buildTotalByShift(basicWardLayout),
+
+        meta: {
+          partial: true,
+          stage: "layout",
+          message: "Layout loaded. Medication data should be loaded by mode=full.",
+          upstreamErrors: [],
+        },
+      });
+    }
 
     let lanKhamByBenhAn = {};
     let lanKhamIdsByBenhAn = {};
@@ -440,8 +535,12 @@ exports.getMedicationList = async (req, res) => {
       lanKhamIdsByBenhAn = Object.fromEntries(
         lanKhamResult.results
           .filter((entry) => Array.isArray(entry) && entry[0])
-          .map(([idBenhAn, encounterIds]) => [idBenhAn, normalizeEncounterIds(encounterIds)])
+          .map(([idBenhAn, encounterIds]) => [
+            idBenhAn,
+            normalizeEncounterIds(encounterIds),
+          ])
       );
+
       lanKhamByBenhAn = Object.fromEntries(
         Object.entries(lanKhamIdsByBenhAn)
           .map(([idBenhAn, encounterIds]) => [
@@ -450,18 +549,19 @@ exports.getMedicationList = async (req, res) => {
           ])
           .filter(([, idPhieuKham]) => idPhieuKham)
       );
+
       lanKhamErrors = lanKhamResult.errors;
     }
 
     const phieuKhamIds = shouldResolveEncountersByDate
       ? Array.from(
-          new Set(
-            Object.values(lanKhamIdsByBenhAn)
-              .flat()
-              .map((value) => normalizeString(value))
-              .filter(Boolean)
-          )
-        ).sort()
+        new Set(
+          Object.values(lanKhamIdsByBenhAn)
+            .flat()
+            .map((value) => normalizeString(value))
+            .filter(Boolean)
+        )
+      ).sort()
       : latestPhieuKhamIds;
 
     let medsByVisit = {};
@@ -476,17 +576,18 @@ exports.getMedicationList = async (req, res) => {
       medsByVisit = Object.fromEntries(
         medicationResult.results.filter((entry) => Array.isArray(entry) && entry[0])
       );
+
       medicationErrors = medicationResult.errors;
     }
 
     const splitRows = phieuKhamIds.length
       ? await MedShiftSplit.find({
-          idPhieuKham: { $in: phieuKhamIds },
-        })
-          .select(
-            "idPhieuKham idPhieuThuoc splits status returnHistory splitSource confidence needsReview reason rawInstruction parsedInstruction confirmedShifts"
-          )
-          .lean()
+        idPhieuKham: { $in: phieuKhamIds },
+      })
+        .select(
+          "idPhieuKham idPhieuThuoc splits status returnHistory splitSource confidence needsReview reason rawInstruction parsedInstruction confirmedShifts"
+        )
+        .lean()
       : [];
 
     const medSplitsByVisit = buildMedSplitsMapByVisit(splitRows);
@@ -501,55 +602,62 @@ exports.getMedicationList = async (req, res) => {
 
     const wardLayout = Array.isArray(wardData?.DSPhong)
       ? wardData.DSPhong.map((phong) => ({
-          room: normalizeString(phong?.Ma) || "--",
-          beds: Array.isArray(phong?.DsGiuong)
-            ? phong.DsGiuong.map((giuong) => {
-                const bedCode = normalizeString(giuong?.MaGiuong) || "--";
-                const visits = Array.isArray(giuong?.DsBenhAn)
-                  ? giuong.DsBenhAn.map((benhAn) => {
-                      const idBenhAn = normalizeString(benhAn?.IdBenhAn) || "";
-                      const latestIdPhieuKham = latestPhieuKhamByBenhAn[idBenhAn] || "";
-                      const resolvedIdPhieuKhamIds = shouldResolveEncountersByDate
-                        ? normalizeEncounterIds(lanKhamIdsByBenhAn[idBenhAn] || [])
-                        : normalizeEncounterIds([latestIdPhieuKham]);
-                      const resolvedIdPhieuKham = pickPrimaryEncounterId(
-                        resolvedIdPhieuKhamIds,
-                        latestIdPhieuKham
-                      );
-                      const shifts = mergeShiftStats(
-                        resolvedIdPhieuKhamIds.map(
-                          (idPhieuKham) =>
-                            shiftsByVisit[idPhieuKham] ||
-                            buildShiftStats(
-                              medsByVisit[idPhieuKham] || [],
-                              medSplitsByVisit[idPhieuKham] || {}
-                            )
-                        )
-                      );
+        room: normalizeString(phong?.Ma) || "--",
+        beds: Array.isArray(phong?.DsGiuong)
+          ? phong.DsGiuong.map((giuong) => {
+            const bedCode = normalizeString(giuong?.MaGiuong) || "--";
 
-                      return {
-                        id: idBenhAn,
-                        patientName: normalizeString(benhAn?.HoTenBenhNhan) || "",
-                        patientCode: normalizeString(benhAn?.MaBenhNhan) || "",
-                        patientGender: normalizeString(benhAn?.GioiTinh),
-                        patientAge: normalizeString(benhAn?.Tuoi),
-                        room: normalizeString(phong?.Ma) || "--",
-                        bed: bedCode,
-                        idPhieuKham: resolvedIdPhieuKham,
-                        idPhieuKhamIds: resolvedIdPhieuKhamIds,
-                        marSummary: { shifts },
-                      };
-                    })
-                  : [];
+            const visits = Array.isArray(giuong?.DsBenhAn)
+              ? giuong.DsBenhAn.map((benhAn) => {
+                const idBenhAn = normalizeString(benhAn?.IdBenhAn) || "";
+                const latestIdPhieuKham = latestPhieuKhamByBenhAn[idBenhAn] || "";
+
+                const resolvedIdPhieuKhamIds = shouldResolveEncountersByDate
+                  ? normalizeEncounterIds(lanKhamIdsByBenhAn[idBenhAn] || [])
+                  : normalizeEncounterIds([latestIdPhieuKham]);
+
+                const resolvedIdPhieuKham = pickPrimaryEncounterId(
+                  resolvedIdPhieuKhamIds,
+                  latestIdPhieuKham
+                );
+
+                const shifts = mergeShiftStats(
+                  resolvedIdPhieuKhamIds.map(
+                    (idPhieuKham) =>
+                      shiftsByVisit[idPhieuKham] ||
+                      buildShiftStats(
+                        medsByVisit[idPhieuKham] || [],
+                        medSplitsByVisit[idPhieuKham] || {}
+                      )
+                  )
+                );
 
                 return {
-                  code: bedCode,
-                  visits,
-                  isOccupied: visits.length > 0,
+                  id: idBenhAn,
+                  patientName: normalizeString(benhAn?.HoTenBenhNhan) || "",
+                  patientCode: normalizeString(benhAn?.MaBenhNhan) || "",
+                  patientGender: normalizeString(benhAn?.GioiTinh),
+                  patientAge: normalizeString(benhAn?.Tuoi),
+                  room: normalizeString(phong?.Ma) || "--",
+                  bed: bedCode,
+                  idPhieuKham: resolvedIdPhieuKham,
+                  idPhieuKhamIds: resolvedIdPhieuKhamIds,
+                  marSummary: {
+                    loading: false,
+                    shifts,
+                  },
                 };
               })
-            : [],
-        }))
+              : [];
+
+            return {
+              code: bedCode,
+              visits,
+              isOccupied: visits.length > 0,
+            };
+          })
+          : [],
+      }))
       : [];
 
     const totalByShift = buildTotalByShift(wardLayout);
@@ -557,6 +665,7 @@ exports.getMedicationList = async (req, res) => {
 
     return res.json({
       date: requestedDate,
+      mode,
       idKhoa: departmentContext.idHis,
       departmentId: departmentContext.departmentId,
       shouldResolveEncountersByDate,
@@ -577,6 +686,7 @@ exports.getMedicationList = async (req, res) => {
       totalByShift,
       meta: {
         partial: upstreamErrors.length > 0,
+        stage: "full",
         upstreamErrors,
       },
     });
@@ -626,11 +736,11 @@ exports.getMedicationConfirmationHistory = async (req, res) => {
 
     const medOrders = rows.length
       ? await MedicationOrder.find({
-          idPhieuKham: { $in: [...new Set(rows.map((row) => row.idPhieuKham))] },
-          idPhieuThuoc: { $in: [...new Set(rows.map((row) => row.idPhieuThuoc))] },
-        })
-          .select("idPhieuKham idPhieuThuoc tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
-          .lean()
+        idPhieuKham: { $in: [...new Set(rows.map((row) => row.idPhieuKham))] },
+        idPhieuThuoc: { $in: [...new Set(rows.map((row) => row.idPhieuThuoc))] },
+      })
+        .select("idPhieuKham idPhieuThuoc tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
+        .lean()
       : [];
 
     const medOrderMap = new Map(
@@ -797,18 +907,18 @@ exports.confirmAllUsage = async (req, res) => {
     const itemMap = new Map(
       Array.isArray(items)
         ? items
-            .filter((item) => item?.idPhieuThuoc)
-            .map((item) => [String(item.idPhieuThuoc), item])
+          .filter((item) => item?.idPhieuThuoc)
+          .map((item) => [String(item.idPhieuThuoc), item])
         : []
     );
 
     const medOrders = pendingRows.length
       ? await MedicationOrder.find({
-          idPhieuKham,
-          idPhieuThuoc: { $in: pendingRows.map((row) => row.idPhieuThuoc) },
-        })
-          .select("idPhieuThuoc tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
-          .lean()
+        idPhieuKham,
+        idPhieuThuoc: { $in: pendingRows.map((row) => row.idPhieuThuoc) },
+      })
+        .select("idPhieuThuoc tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
+        .lean()
       : [];
 
     const medOrderMap = new Map(medOrders.map((row) => [String(row.idPhieuThuoc), row]));
