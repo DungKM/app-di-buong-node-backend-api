@@ -63,4 +63,15 @@ app.use("/api", noteRoutes);
 app.use("/api", notiRoutes);
 app.use('/api/ai', aiRoutes);
 
+
+const path = require("path");
+
+// Serve React build
+app.use(express.static(path.join(__dirname, "../../app-dibuong-quocoai-fe/dist")));
+
+// React Router fallback
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../../app-dibuong-quocoai-fe/dist/index.html"));
+});
+
 module.exports = server;
