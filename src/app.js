@@ -67,11 +67,11 @@ app.use('/api/ai', aiRoutes);
 const path = require("path");
 
 // Serve React build
-app.use(express.static(path.join(__dirname, "../../app-dibuong-quocoai-fe/dist")));
+app.use(express.static("D:\\webdibuong\\app-dibuong-quocoai-fe\\dist"));
 
 // React Router fallback
 app.get("/{*path}", (req, res) => {
-  res.sendFile(path.join(__dirname, "../../app-dibuong-quocoai-fe/dist/index.html"));
+  res.sendFile("D:\\webdibuong\\app-dibuong-quocoai-fe\\dist\\index.html");
 });
 
 module.exports = server;
