@@ -39,7 +39,6 @@ router.patch("/users/:id/status",
 
 router.post("/users/:id/reset-password", 
   authRequired, 
-  requireRoles("admin"), 
   validate(resetPasswordSchema), 
   authController.resetPassword
 );
@@ -49,6 +48,12 @@ router.post("/users/import", authRequired, requireRoles("admin"), authController
 router.route("/departments")
   .get(authRequired, requireRoles("admin"), departmentController.getAllDepartments)
   .post(authRequired, requireRoles("admin"), departmentController.createDepartment);
+
+router.get(
+  "/departments/:id/id-his",
+  authRequired,
+  departmentController.getDepartmentHisById
+);
 
 router.route("/departments/:id")
   .patch(authRequired, requireRoles("admin"), departmentController.updateDepartment)

@@ -5,9 +5,27 @@ const medSplitController = require("../controllers/medSplit.controller");
 const { authRequired } = require("../middlewares/auth.middleware");
 
 router.get(
+  "/medication-confirmations/history",
+  authRequired,
+  medSplitController.getMedicationConfirmationHistory
+);
+
+router.get(
+  "/medication-list",
+  authRequired,
+  medSplitController.getMedicationList
+);
+
+router.get(
   "/encounters/:idPhieuKham/med-splits",
   authRequired,
   medSplitController.list
+);
+
+router.post(
+  "/encounters/:idPhieuKham/med-splits/auto-split",
+  authRequired,
+  medSplitController.autoSplitAll
 );
 
 router.put(
@@ -33,4 +51,17 @@ router.patch(
   authRequired,
   medSplitController.confirmUsage
 );
+
+router.patch(
+  "/encounters/:idPhieuKham/med-splits/confirm-all",
+  authRequired,
+  medSplitController.confirmAllUsage
+);
+
+router.patch(
+  "/encounters/:idPhieuKham/med-splits/:idPhieuThuoc/unconfirm",
+  authRequired,
+  medSplitController.cancelConfirmedUsage
+);
+
 module.exports = router;
