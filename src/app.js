@@ -70,7 +70,7 @@ const path = require("path");
 app.use(express.static(path.join(__dirname, "../../app-dibuong-quocoai-fe/dist")));
 
 // React Router fallback
-app.get("*", (req, res) => {
+app.get("/{*path}", (req, res) => {
   res.sendFile(path.join(__dirname, "../../app-dibuong-quocoai-fe/dist/index.html"));
 });
 
