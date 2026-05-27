@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"d:\\\\projects\\\\app-di-buong-full\\\\app-di-buong-node-backend-api\" -Force)"
+    ]
+  }
+}

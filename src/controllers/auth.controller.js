@@ -2,6 +2,7 @@ const bcrypt = require("bcrypt");
 const User = require("../models/User");
 const Department = require('../models/Department');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require("../utils/jwt");
+const ExcelJS = require('exceljs');
 
 async function buildAccessPayload(user) {
   const dept = user.idKhoa
@@ -337,5 +338,115 @@ exports.importUsers = async (req, res) => {
   } catch (error) {
     console.error("Import Users Error:", error);
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.downloadUsersImportTemplate = async (req, res) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('NguoiDung');
+
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F4E79' } };
+    const headerFont = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    const centerAlign = { horizontal: 'center', vertical: 'middle' };
+    const border = {
+      top: { style: 'thin' }, bottom: { style: 'thin' },
+      left: { style: 'thin' }, right: { style: 'thin' },
+    };
+
+    ws.columns = [
+      { header: 'username (*)', key: 'username', width: 22 },
+      { header: 'password',     key: 'password', width: 20 },
+      { header: 'role',         key: 'role',     width: 12 },
+      { header: 'idKhoa',       key: 'idKhoa',   width: 38 },
+      { header: 'isActive',     key: 'isActive', width: 12 },
+    ];
+
+    ws.getRow(1).eachCell(cell => {
+      cell.fill = headerFill;
+      cell.font = headerFont;
+      cell.alignment = centerAlign;
+      cell.border = border;
+    });
+    ws.getRow(1).height = 22;
+
+    const samples = [
+      { username: 'nguyen.van.a', password: 'admin123', role: 'nurse',  idKhoa: 'KH001', isActive: true },
+      { username: 'tran.thi.b',   password: 'admin123', role: 'doctor', idKhoa: 'KH002', isActive: true },
+      { username: 'le.van.c',     password: '',         role: 'admin',  idKhoa: '',      isActive: true },
+      { username: 'pham.thi.d',   password: '',         role: 'nurse',  idKhoa: '',      isActive: false },
+    ];
+
+    const dataFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF4FF' } };
+
+    samples.forEach(row => {
+      const r = ws.addRow(row);
+      r.eachCell({ includeEmpty: true }, cell => {
+        cell.fill = dataFill;
+        cell.font = { size: 11 };
+        cell.border = border;
+        cell.alignment = { vertical: 'middle' };
+      });
+      r.height = 20;
+    });
+
+    // Dropdown cho cột role
+    ws.getColumn('role').eachCell({ includeEmpty: true }, (cell, rowNum) => {
+      if (rowNum === 1) return;
+      cell.dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"admin,doctor,nurse"'],
+        showErrorMessage: true,
+        errorTitle: 'Giá trị không hợp lệ',
+        error: 'Chọn một trong: admin, doctor, nurse',
+      };
+    });
+
+    // Dropdown cho cột isActive
+    ws.getColumn('isActive').eachCell({ includeEmpty: true }, (cell, rowNum) => {
+      if (rowNum === 1) return;
+      cell.dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"true,false"'],
+        showErrorMessage: true,
+        errorTitle: 'Giá trị không hợp lệ',
+        error: 'Chọn true hoặc false',
+      };
+    });
+
+    // Sheet hướng dẫn
+    const wsNote = wb.addWorksheet('Hướng dẫn');
+    wsNote.getColumn(1).width = 72;
+    const notes = [
+      ['HƯỚNG DẪN IMPORT NGƯỜI DÙNG'],
+      [''],
+      ['Cột bắt buộc:'],
+      ['  username  - Tên đăng nhập (duy nhất, viết thường)'],
+      [''],
+      ['Cột tùy chọn:'],
+      ['  password  - Mật khẩu (để trống dùng mặc định admin123, không reset nếu đã tồn tại)'],
+      ['  role      - Quyền: admin | doctor | nurse  (mặc định: nurse)'],
+      ['  idKhoa    - idHis của Khoa (tra trong file mẫu khoa/phòng), hoặc ObjectId MongoDB'],
+      ['  isActive  - true | false  (mặc định: true)'],
+      [''],
+      ['Lưu ý:'],
+      ['  - Upsert theo username: đã tồn tại thì cập nhật, chưa có thì tạo mới'],
+      ['  - Password chỉ set khi tạo mới, KHÔNG bị reset khi import lại'],
+      ['  - idKhoa để trống nếu user không thuộc khoa nào'],
+    ];
+    notes.forEach((row, i) => {
+      const r = wsNote.addRow(row);
+      if (i === 0) r.getCell(1).font = { bold: true, size: 13, color: { argb: 'FF1F4E79' } };
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="mau_import_nguoi_dung.xlsx"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error("Download Users Template Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };

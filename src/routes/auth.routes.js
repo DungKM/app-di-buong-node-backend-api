@@ -42,6 +42,7 @@ router.post("/users/:id/reset-password",
   validate(resetPasswordSchema), 
   authController.resetPassword
 );
+router.get("/users/import/template", authRequired, requireRoles("admin"), authController.downloadUsersImportTemplate);
 router.post("/users/import", authRequired, requireRoles("admin"), authController.importUsers);
 
 // --- 3. DEPARTMENT MANAGEMENT (Admin Only) ---
@@ -54,6 +55,9 @@ router.get(
   authRequired,
   departmentController.getDepartmentHisById
 );
+
+router.get("/departments/import/template", authRequired, requireRoles("admin"), departmentController.downloadImportTemplate);
+router.post("/departments/import", authRequired, requireRoles("admin"), departmentController.importDepartments);
 
 router.route("/departments/:id")
   .patch(authRequired, requireRoles("admin"), departmentController.updateDepartment)
