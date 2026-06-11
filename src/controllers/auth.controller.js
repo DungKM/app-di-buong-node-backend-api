@@ -4,6 +4,8 @@ const Department = require('../models/Department');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require("../utils/jwt");
 const ExcelJS = require('exceljs');
 
+const DUPLICATE_USERNAME_MESSAGE = "Tên đăng nhập đã tồn tại";
+
 async function buildAccessPayload(user) {
   const dept = user.idKhoa
     ? await Department.findById(user.idKhoa).select("name")
@@ -22,6 +24,9 @@ const hashPassword = async (password) => {
   const salt = await bcrypt.genSalt(10);
   return await bcrypt.hash(password, salt);
 };
+
+const isDuplicateUsernameError = (error) =>
+  error?.code === 11000 && (error?.keyPattern?.username || error?.keyValue?.username);
 
 exports.login = async (req, res) => {
   const { username, password } = req.body;
@@ -130,9 +135,15 @@ exports.listUsers = async (req, res) => {
 exports.createUser = async (req, res) => {
   try {
     const { fullName, username, password, role, idKhoa } = req.body;
+    const normalizedUsername = String(username || "").trim().toLowerCase();
 
     if (!password) {
       return res.status(400).json({ success: false, message: "Mật khẩu là bắt buộc" });
+    }
+
+    const existingUser = await User.findOne({ username: normalizedUsername }).select("_id");
+    if (existingUser) {
+      return res.status(409).json({ success: false, message: DUPLICATE_USERNAME_MESSAGE });
     }
 
     let finalIdKhoa = null;
@@ -147,7 +158,7 @@ exports.createUser = async (req, res) => {
 
     const newUser = new User({
       fullName,
-      username,
+      username: normalizedUsername,
       passwordHash,
       role,
       idKhoa: finalIdKhoa
@@ -157,6 +168,9 @@ exports.createUser = async (req, res) => {
     res.status(201).json({ success: true, data: newUser });
   } catch (error) {
     console.error("Create User Error:", error);
+    if (isDuplicateUsernameError(error)) {
+      return res.status(409).json({ success: false, message: DUPLICATE_USERNAME_MESSAGE });
+    }
     res.status(400).json({ success: false, message: error.message });
   }
 };
