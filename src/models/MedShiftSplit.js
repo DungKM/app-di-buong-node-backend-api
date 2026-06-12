@@ -57,8 +57,8 @@ const MedShiftSplitSchema = new mongoose.Schema(
 
     splitSource: {
       type: String,
-      enum: ["MANUAL", "RULE", "AI"],
-      default: "MANUAL",
+      enum: ["UPSTREAM", "MANUAL", "RULE", "AI"],
+      default: "UPSTREAM",
     },
 
     confidence: {

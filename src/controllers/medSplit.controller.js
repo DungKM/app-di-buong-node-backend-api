@@ -4,9 +4,6 @@ const Notification = require("../models/Notification");
 const Department = require("../models/Department");
 const User = require("../models/User");
 const {
-  suggestSplitFromInstruction,
-} = require("../services/medSplitSuggestion.service");
-const {
   getBaseUrl,
   getCacheTtlMs,
   getBuongPhong,
@@ -18,6 +15,14 @@ const {
 const VALID_SHIFTS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
 const SPLIT_FIELDS = ["MORNING", "NOON", "AFTERNOON", "NIGHT"];
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const SHIFT_FIELD_MAP = {
+  MORNING: ["Sang", "MORNING"],
+  NOON: ["Trua", "NOON"],
+  AFTERNOON: ["Chieu", "AFTERNOON"],
+  NIGHT: ["Toi", "NIGHT"],
+};
+const UPSTREAM_SPLIT_SOURCE = "UPSTREAM";
+const PENDING_MEDICATION_STATUS = "Chờ dùng thuốc";
 
 const validateShift = (shift) => {
   if (!shift) {
@@ -61,6 +66,13 @@ const normalizeSplits = (splits = {}) => {
   return normalizedSplits;
 };
 
+const createEmptySplits = () => ({
+  MORNING: 0,
+  NOON: 0,
+  AFTERNOON: 0,
+  NIGHT: 0,
+});
+
 const pickFirstDefined = (source, keys) => {
   for (const key of keys) {
     if (source?.[key] !== undefined && source?.[key] !== null && source?.[key] !== "") {
@@ -79,6 +91,100 @@ const normalizeString = (value) => {
 
 const getMedicationOrderField = (medOrder, keys) =>
   normalizeString(pickFirstDefined(medOrder, keys));
+
+const getMedicationShiftValue = (medication, shift) =>
+  pickFirstDefined(medication, SHIFT_FIELD_MAP[shift] || [shift]);
+
+const buildSplitsFromMedication = (medication = {}, fallbackSplits = null) => {
+  const splits = createEmptySplits();
+  let hasUpstreamShiftData = false;
+
+  for (const shift of VALID_SHIFTS) {
+    const rawValue = getMedicationShiftValue(medication, shift);
+    if (rawValue !== undefined && rawValue !== null && rawValue !== "") {
+      hasUpstreamShiftData = true;
+    }
+
+    const normalizedValue = normalizeSplitValue(rawValue);
+    splits[shift] = normalizedValue === null ? 0 : normalizedValue;
+  }
+
+  if (hasUpstreamShiftData) {
+    return splits;
+  }
+
+  return normalizeSplits(fallbackSplits) || createEmptySplits();
+};
+
+const buildSplitRecord = (row = null, medication = null) => ({
+  splits: buildSplitsFromMedication(medication || {}, row?.splits),
+  status: row?.status || PENDING_MEDICATION_STATUS,
+  returnHistory: row?.returnHistory || [],
+  splitSource: medication ? UPSTREAM_SPLIT_SOURCE : row?.splitSource || UPSTREAM_SPLIT_SOURCE,
+  confidence: medication ? 1 : row?.confidence ?? 1,
+  needsReview: false,
+  reason: null,
+  rawInstruction:
+    normalizeString(pickFirstDefined(medication, ["LieuDung", "lieuDung"])) ??
+    row?.rawInstruction ??
+    null,
+  parsedInstruction: null,
+  confirmedShifts: row?.confirmedShifts ?? [],
+});
+
+const buildSplitPersistencePayload = ({ row = null, medication = null, userId = null }) => {
+  const splitRecord = buildSplitRecord(row, medication);
+
+  return {
+    splits: splitRecord.splits,
+    updatedBy: userId,
+    status: PENDING_MEDICATION_STATUS,
+    splitSource: splitRecord.splitSource,
+    confidence: splitRecord.confidence,
+    needsReview: false,
+    reason: null,
+    rawInstruction: splitRecord.rawInstruction,
+    parsedInstruction: null,
+  };
+};
+
+const groupPersistedRowsByVisit = (rows = []) => {
+  const map = {};
+
+  rows.forEach((row) => {
+    if (!row?.idPhieuKham || !row?.idPhieuThuoc) {
+      return;
+    }
+
+    if (!map[row.idPhieuKham]) {
+      map[row.idPhieuKham] = {};
+    }
+
+    map[row.idPhieuKham][row.idPhieuThuoc] = row;
+  });
+
+  return map;
+};
+
+const buildRequestedMedicationIds = (items = []) =>
+  new Set(
+    (Array.isArray(items) ? items : [])
+      .map((item) => normalizeString(item?.idPhieuThuoc || item?.IdPhieuThuoc))
+      .filter(Boolean)
+  );
+
+const findMedicationById = (medications = [], idPhieuThuoc) => {
+  const normalizedIdPhieuThuoc = normalizeString(idPhieuThuoc);
+  if (!normalizedIdPhieuThuoc) {
+    return null;
+  }
+
+  return (
+    medications.find(
+      (medication) => normalizeString(medication?.IdPhieuThuoc) === normalizedIdPhieuThuoc
+    ) || null
+  );
+};
 
 const resolveDepartmentId = async (rawIdKhoa) => {
   if (!rawIdKhoa) return null;
@@ -194,33 +300,106 @@ const collectLatestPhieuKhamIds = (wardData) => {
   return Array.from(new Set(Object.values(collectLatestPhieuKhamByBenhAn(wardData)))).sort();
 };
 
-const buildMedSplitsMapByVisit = (rows = []) => {
+const buildMedSplitsMapByVisit = (medsByVisit = {}, rows = []) => {
+  const persistedRowsByVisit = groupPersistedRowsByVisit(rows);
+  const visitIds = Array.from(
+    new Set([...Object.keys(medsByVisit || {}), ...Object.keys(persistedRowsByVisit)])
+  );
   const map = {};
 
-  rows.forEach((row) => {
-    if (!row?.idPhieuKham || !row?.idPhieuThuoc) {
-      return;
-    }
+  visitIds.forEach((idPhieuKham) => {
+    const medications = Array.isArray(medsByVisit?.[idPhieuKham]) ? medsByVisit[idPhieuKham] : [];
+    const persistedRows = persistedRowsByVisit[idPhieuKham] || {};
+    const splitMap = {};
 
-    if (!map[row.idPhieuKham]) {
-      map[row.idPhieuKham] = {};
-    }
+    medications.forEach((medication) => {
+      const idPhieuThuoc = normalizeString(medication?.IdPhieuThuoc);
+      if (!idPhieuThuoc) {
+        return;
+      }
 
-    map[row.idPhieuKham][row.idPhieuThuoc] = {
-      splits: row.splits,
-      status: row.status,
-      returnHistory: row.returnHistory,
-      splitSource: row.splitSource,
-      confidence: row.confidence,
-      needsReview: row.needsReview,
-      reason: row.reason,
-      rawInstruction: row.rawInstruction,
-      parsedInstruction: row.parsedInstruction,
-      confirmedShifts: row.confirmedShifts ?? [],
-    };
+      splitMap[idPhieuThuoc] = buildSplitRecord(persistedRows[idPhieuThuoc], medication);
+    });
+
+    Object.entries(persistedRows).forEach(([idPhieuThuoc, row]) => {
+      if (!splitMap[idPhieuThuoc]) {
+        splitMap[idPhieuThuoc] = buildSplitRecord(row, null);
+      }
+    });
+
+    if (Object.keys(splitMap).length > 0) {
+      map[idPhieuKham] = splitMap;
+    }
   });
 
   return map;
+};
+
+const loadEncounterMedications = async (idPhieuKham) => {
+  const medications = await getDonThuocByPhieuKham(idPhieuKham);
+  return Array.isArray(medications) ? medications : [];
+};
+
+const ensureMedSplitRow = async ({ idPhieuKham, idPhieuThuoc, userId = null }) => {
+  const medications = await loadEncounterMedications(idPhieuKham);
+  const medication = findMedicationById(medications, idPhieuThuoc);
+  const existingRow = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
+
+  if (!medication && !existingRow) {
+    return { row: null, medication: null };
+  }
+
+  const payload = buildSplitPersistencePayload({
+    row: existingRow,
+    medication,
+    userId,
+  });
+
+  const row = await MedShiftSplit.findOneAndUpdate(
+    { idPhieuKham, idPhieuThuoc },
+    { $set: payload },
+    { upsert: true, new: true }
+  );
+
+  return { row, medication };
+};
+
+const syncEncounterMedicationsFromUpstream = async ({
+  idPhieuKham,
+  userId = null,
+  requestedIds = null,
+}) => {
+  const medications = await loadEncounterMedications(idPhieuKham);
+  const filteredMedications = medications.filter((medication) => {
+    const idPhieuThuoc = normalizeString(medication?.IdPhieuThuoc);
+    if (!idPhieuThuoc) {
+      return false;
+    }
+
+    return !requestedIds || requestedIds.has(idPhieuThuoc);
+  });
+
+  const ops = filteredMedications.map((medication) => ({
+    updateOne: {
+      filter: {
+        idPhieuKham,
+        idPhieuThuoc: normalizeString(medication?.IdPhieuThuoc),
+      },
+      update: {
+        $set: buildSplitPersistencePayload({
+          medication,
+          userId,
+        }),
+      },
+      upsert: true,
+    },
+  }));
+
+  if (ops.length > 0) {
+    await MedShiftSplit.bulkWrite(ops);
+  }
+
+  return filteredMedications;
 };
 
 const buildShiftStats = (meds = [], splits = {}) => {
@@ -372,23 +551,11 @@ const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => 
 exports.list = async (req, res) => {
   try {
     const { idPhieuKham } = req.params;
-    const rows = await MedShiftSplit.find({ idPhieuKham });
-
-    const map = {};
-    rows.forEach((r) => {
-      map[r.idPhieuThuoc] = {
-        splits: r.splits,
-        status: r.status,
-        returnHistory: r.returnHistory,
-        splitSource: r.splitSource,
-        confidence: r.confidence,
-        needsReview: r.needsReview,
-        reason: r.reason,
-        rawInstruction: r.rawInstruction,
-        parsedInstruction: r.parsedInstruction,
-        confirmedShifts: r.confirmedShifts ?? [],
-      };
-    });
+    const [rows, medications] = await Promise.all([
+      MedShiftSplit.find({ idPhieuKham }).lean(),
+      loadEncounterMedications(idPhieuKham),
+    ]);
+    const map = buildMedSplitsMapByVisit({ [idPhieuKham]: medications }, rows)[idPhieuKham] || {};
 
     return res.json({ idPhieuKham, splits: map });
   } catch (error) {
@@ -590,7 +757,7 @@ exports.getMedicationList = async (req, res) => {
         .lean()
       : [];
 
-    const medSplitsByVisit = buildMedSplitsMapByVisit(splitRows);
+    const medSplitsByVisit = buildMedSplitsMapByVisit(medsByVisit, splitRows);
     const shiftsByVisit = {};
 
     phieuKhamIds.forEach((idPhieuKham) => {
@@ -801,9 +968,18 @@ exports.getMedicationConfirmationHistory = async (req, res) => {
 exports.saveOne = async (req, res) => {
   try {
     const { idPhieuKham, idPhieuThuoc } = req.params;
-    const { splits } = req.body;
     const userId = req.user?.id || req.user?.sub;
-    const normalizedSplits = normalizeSplits(splits);
+    const { row } = await ensureMedSplitRow({
+      idPhieuKham,
+      idPhieuThuoc,
+      userId,
+    });
+
+    if (!row) {
+      return res.status(404).json({ message: "Khong tim thay phieu thuoc" });
+    }
+
+    return res.json(row);
 
     if (!normalizedSplits) {
       return res.status(400).json({
@@ -843,6 +1019,57 @@ exports.confirmUsage = async (req, res) => {
     if (shiftError) {
       return res.status(400).json({ message: shiftError });
     }
+
+    const { row: existingRow, medication } = await ensureMedSplitRow({
+      idPhieuKham,
+      idPhieuThuoc,
+      userId,
+    });
+
+    if (!existingRow) {
+      return res.status(404).json({ message: "Khong tim thay phieu thuoc" });
+    }
+
+    const splitRecord = buildSplitRecord(existingRow, medication);
+    const quantityInShift = Number(splitRecord.splits?.[shift] ?? 0);
+    if (quantityInShift <= 0) {
+      return res.status(400).json({ message: "Thuoc khong co so luong o ca nay" });
+    }
+
+    const isAlreadyConfirmed = (existingRow.confirmedShifts ?? []).includes(shift);
+    if (isAlreadyConfirmed) {
+      return res.json(existingRow);
+    }
+
+    const medOrderPayload =
+      medication ||
+      (await MedicationOrder.findOne({ idPhieuKham, idPhieuThuoc })
+        .select("tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
+        .lean());
+
+    const savedUsageRow = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $addToSet: { confirmedShifts: shift },
+        $push: {
+          confirmationHistory: buildHistoryEntry({
+            req,
+            shift,
+            splitRow: splitRecord,
+            medOrder: medOrderPayload,
+            payload: req.body,
+          }),
+        },
+        $set: buildSplitPersistencePayload({
+          row: existingRow,
+          medication,
+          userId,
+        }),
+      },
+      { new: true }
+    );
+
+    return res.json(savedUsageRow);
 
     const existing = await MedShiftSplit.findOne({ idPhieuKham, idPhieuThuoc });
     if (!existing) {
@@ -892,6 +1119,110 @@ exports.confirmAllUsage = async (req, res) => {
     if (shiftError) {
       return res.status(400).json({ message: shiftError });
     }
+
+    const requestedIds = buildRequestedMedicationIds(items);
+    const medications = await loadEncounterMedications(idPhieuKham);
+    const targetMedications = medications.filter((medication) => {
+      const id = normalizeString(medication?.IdPhieuThuoc);
+      if (!id) {
+        return false;
+      }
+
+      return requestedIds.size === 0 || requestedIds.has(id);
+    });
+
+    if (!targetMedications.length) {
+      return res.status(404).json({ message: "Khong tim thay phieu thuoc" });
+    }
+
+    const existingRows = await MedShiftSplit.find({
+      idPhieuKham,
+      idPhieuThuoc: { $in: targetMedications.map((medication) => normalizeString(medication?.IdPhieuThuoc)) },
+    })
+      .select("_id idPhieuThuoc confirmedShifts splits returnHistory status splitSource confidence needsReview reason rawInstruction parsedInstruction")
+      .lean();
+
+    const existingRowMap = new Map(
+      existingRows.map((row) => [normalizeString(row.idPhieuThuoc), row])
+    );
+    const payloadItemMap = new Map(
+      (Array.isArray(items) ? items : [])
+        .map((item) => [
+          normalizeString(item?.idPhieuThuoc || item?.IdPhieuThuoc),
+          item,
+        ])
+        .filter(([id]) => id)
+    );
+
+    const pendingMedications = [];
+    let alreadyConfirmedCount = 0;
+    let skippedNoQuantityCount = 0;
+
+    targetMedications.forEach((medication) => {
+      const idPhieuThuoc = normalizeString(medication?.IdPhieuThuoc);
+      const row = existingRowMap.get(idPhieuThuoc) || null;
+      const splitRecord = buildSplitRecord(row, medication);
+      const quantityInShift = Number(splitRecord.splits?.[shift] ?? 0);
+
+      if (quantityInShift <= 0) {
+        skippedNoQuantityCount++;
+        return;
+      }
+
+      if ((row?.confirmedShifts ?? []).includes(shift)) {
+        alreadyConfirmedCount++;
+        return;
+      }
+
+      pendingMedications.push({
+        idPhieuThuoc,
+        medication,
+        row,
+        splitRecord,
+        payload: {
+          ...(req.body || {}),
+          ...(payloadItemMap.get(idPhieuThuoc) || {}),
+        },
+      });
+    });
+
+    if (pendingMedications.length > 0) {
+      await MedShiftSplit.bulkWrite(
+        pendingMedications.map(({ idPhieuThuoc, medication, row, splitRecord, payload }) => ({
+          updateOne: {
+            filter: { idPhieuKham, idPhieuThuoc },
+            update: {
+              $addToSet: { confirmedShifts: shift },
+              $push: {
+                confirmationHistory: buildHistoryEntry({
+                  req,
+                  shift,
+                  splitRow: splitRecord,
+                  medOrder: medication,
+                  payload,
+                }),
+              },
+              $set: buildSplitPersistencePayload({
+                row,
+                medication,
+                userId,
+              }),
+            },
+            upsert: true,
+          },
+        }))
+      );
+    }
+
+    return res.json({
+      ok: true,
+      idPhieuKham,
+      shift,
+      total: targetMedications.length,
+      modifiedCount: pendingMedications.length,
+      alreadyConfirmedCount,
+      skippedNoQuantityCount,
+    });
 
     const rows = await MedShiftSplit.find({ idPhieuKham }).select(
       "_id idPhieuThuoc confirmedShifts splits"
@@ -1017,6 +1348,26 @@ exports.returnMedication = async (req, res) => {
 
     const userId = req.user?.id || req.user?.sub;
     const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa;
+    const shiftError = validateShift(shift);
+    if (shiftError) {
+      return res.status(400).json({ message: shiftError });
+    }
+
+    const { row: existingRow, medication } = await ensureMedSplitRow({
+      idPhieuKham,
+      idPhieuThuoc,
+      userId,
+    });
+
+    if (!existingRow) {
+      return res.status(404).json({ message: "Khong tim thay phieu thuoc" });
+    }
+
+    const splitRecord = buildSplitRecord(existingRow, medication);
+    const quantityInShift = Number(splitRecord.splits?.[shift] ?? 0);
+    if (quantityInShift <= 0) {
+      return res.status(400).json({ message: "Thuoc khong co so luong o ca nay" });
+    }
 
     const safeTen = tenBenhNhan || "Bệnh nhân";
     const safeMa = maBenhNhan || "N/A";
@@ -1031,6 +1382,61 @@ exports.returnMedication = async (req, res) => {
     }).toString();
 
     const redirectUrl = `/medication/${idBenhAn}?${qs}`;
+
+    const savedRow = await MedShiftSplit.findOneAndUpdate(
+      { idPhieuKham, idPhieuThuoc },
+      {
+        $push: {
+          returnHistory: {
+            quantity: safeQty,
+            reason: safeReason,
+            shift,
+            returnedBy: userId,
+            returnedAt: new Date(),
+          },
+        },
+        $set: buildSplitPersistencePayload({
+          row: existingRow,
+          medication,
+          userId,
+        }),
+      },
+      { new: true, upsert: true }
+    );
+
+    const notificationPayload = {
+      type: "RETURN",
+      idPhieuKham,
+      idPhieuThuoc,
+      tenBenhNhan: safeTen,
+      maBenhNhan: safeMa,
+      tenThuoc: safeThuoc,
+      soLuongTra: safeQty,
+      reason: safeReason,
+      url: redirectUrl,
+    };
+
+    if (idKhoaRoom) {
+      const notification = await Notification.create({
+        idKhoa: idKhoaRoom,
+        type: "RETURN",
+        title: "Tra thuoc",
+        body: `BN ${safeTen} tra ${safeQty} ${safeThuoc}`,
+        payload: notificationPayload,
+        createdBy: userId || null,
+      });
+
+      if (global._io) {
+        global._io.to(idKhoaRoom).emit("new_notification", {
+          _id: notification._id,
+          ...notificationPayload,
+          createdAt: notification.createdAt,
+          read: false,
+        });
+      }
+    }
+
+    return res.json(savedRow);
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
@@ -1096,6 +1502,18 @@ exports.saveBatch = async (req, res) => {
     const { idPhieuKham } = req.params;
     const { items } = req.body;
     const userId = req.user?.id;
+    const requestedIds = buildRequestedMedicationIds(items);
+    const syncedMedications = await syncEncounterMedicationsFromUpstream({
+      idPhieuKham,
+      userId,
+      requestedIds: requestedIds.size > 0 ? requestedIds : null,
+    });
+
+    return res.json({
+      ok: true,
+      syncedCount: syncedMedications.length,
+      source: UPSTREAM_SPLIT_SOURCE,
+    });
 
     if (!Array.isArray(items)) {
       return res.status(400).json({ message: "Danh sách thuốc không hợp lệ" });
@@ -1172,6 +1590,21 @@ exports.autoSplitAll = async (req, res) => {
     const { idPhieuKham } = req.params;
     const userId = req.user?.id;
     const { items = [] } = req.body;
+    const requestedIds = buildRequestedMedicationIds(items);
+    const syncedMedications = await syncEncounterMedicationsFromUpstream({
+      idPhieuKham,
+      userId,
+      requestedIds: requestedIds.size > 0 ? requestedIds : null,
+    });
+
+    return res.json({
+      ok: true,
+      summary: {
+        total: syncedMedications.length,
+        synced: syncedMedications.length,
+        source: UPSTREAM_SPLIT_SOURCE,
+      },
+    });
 
     if (!Array.isArray(items) || items.length === 0) {
       return res
