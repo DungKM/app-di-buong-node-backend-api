@@ -56,12 +56,14 @@ const medSplitRoutes = require("./routes/medSplit.routes");
 const noteRoutes = require("./routes/note.routes");
 const notiRoutes = require("./routes/notification.routes");
 const aiRoutes = require("./routes/ai.routes");
+const featureFlagRoutes = require("./routes/featureFlag.routes");
 
 app.use("/auth", require("./routes/auth.routes"));
 app.use("/api", medSplitRoutes);
 app.use("/api", noteRoutes);
 app.use("/api", notiRoutes);
 app.use('/api/ai', aiRoutes);
+app.use("/api", featureFlagRoutes);
 
 
 const path = require("path");

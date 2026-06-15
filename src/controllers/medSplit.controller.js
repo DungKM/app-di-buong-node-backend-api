@@ -52,6 +52,7 @@ const normalizeSplitValue = (value) => {
 };
 
 const normalizeSplits = (splits = {}) => {
+  if (!splits) return null;
   const normalizedSplits = {};
 
   for (const field of SPLIT_FIELDS) {
