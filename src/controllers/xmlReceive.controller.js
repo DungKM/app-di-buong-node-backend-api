@@ -63,6 +63,47 @@ exports.receiveXml = async (req, res) => {
   });
 };
 
+exports.receiveXmlFile = async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, message: "Không có file XML được gửi lên" });
+  }
+
+  const callerIp =
+    req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.socket?.remoteAddress;
+  const userAgent = req.headers["user-agent"];
+
+  const rawXml = req.file.buffer.toString("utf8");
+  let parsedData, status, parseError;
+
+  try {
+    parsedData = await parser.parseStringPromise(rawXml);
+    status = "parsed";
+  } catch (err) {
+    parseError = "XML không hợp lệ: " + err.message;
+    status = "error";
+  }
+
+  const doc = await XmlReceive.create({
+    rawXml,
+    parsedData,
+    callerIp,
+    userAgent,
+    status,
+    parseError,
+  });
+
+  if (status === "error") {
+    return res.status(422).json({ success: false, message: parseError, id: doc._id });
+  }
+
+  return res.status(201).json({
+    success: true,
+    message: "Nhận file XML thành công",
+    id: doc._id,
+    data: parsedData,
+  });
+};
+
 exports.listXmlReceives = async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));

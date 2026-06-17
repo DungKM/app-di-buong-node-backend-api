@@ -4,7 +4,6 @@ const XmlReceiveSchema = new mongoose.Schema(
   {
     xmlBase64: {
       type: String,
-      required: true,
     },
     rawXml: {
       type: String,
