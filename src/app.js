@@ -65,13 +65,22 @@ app.use('/api/ai', aiRoutes);
 
 
 const path = require("path");
+const fs = require("fs");
 
-// Serve React build
-app.use(express.static("D:\\webdibuong\\app-dibuong-quocoai-fe\\dist"));
+// Serve React build (đường dẫn cấu hình qua biến môi trường FRONTEND_DIST_PATH)
+const frontendDistPath = process.env.FRONTEND_DIST_PATH
+  ? path.resolve(process.env.FRONTEND_DIST_PATH)
+  : path.join(__dirname, "..", "..", "app-dibuong-quocoai-fe", "dist");
 
-// React Router fallback
-app.get("/{*path}", (req, res) => {
-  res.sendFile("D:\\webdibuong\\app-dibuong-quocoai-fe\\dist\\index.html");
-});
+if (fs.existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+
+  // React Router fallback
+  app.get("/{*path}", (req, res) => {
+    res.sendFile(path.join(frontendDistPath, "index.html"));
+  });
+} else {
+  console.warn(`[app] FRONTEND_DIST_PATH không tồn tại: ${frontendDistPath}. Bỏ qua việc serve React build.`);
+}
 
 module.exports = server;
