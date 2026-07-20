@@ -319,7 +319,24 @@ const buildTotalByShift = (wardLayout = []) => {
   return result;
 };
 
-const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => {
+const findHisMedByIdPhieuThuoc = (meds = [], idPhieuThuoc) => {
+  const normalizedId = normalizeString(idPhieuThuoc);
+  if (!normalizedId) return null;
+
+  return (
+    meds.find((med) => normalizeString(med?.IdPhieuThuoc) === normalizedId) ?? null
+  );
+};
+
+const hasResolvableMedName = (payload, medOrder) =>
+  Boolean(
+    normalizeString(
+      pickFirstDefined(payload, ["tenThuoc", "TenThuoc", "medicineName", "MedicineName"]) ??
+      getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"])
+    )
+  );
+
+const buildHistoryEntry = ({ req, shift, splitRow, medOrder, hisMed, payload = {} }) => {
   const quantityFromPayload = pickFirstDefined(payload, [
     "soLuongDung",
     "SoLuongDung",
@@ -348,19 +365,23 @@ const buildHistoryEntry = ({ req, shift, splitRow, medOrder, payload = {} }) => 
     tuoi: normalizeString(pickFirstDefined(payload, ["tuoi", "Tuoi", "age", "Age"])),
     tenThuoc: normalizeString(
       pickFirstDefined(payload, ["tenThuoc", "TenThuoc", "medicineName", "MedicineName"]) ??
-      getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"])
+      getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"]) ??
+      getMedicationOrderField(hisMed, ["TenThuoc", "Ten", "tenThuoc"])
     ),
     hamLuong: normalizeString(
       pickFirstDefined(payload, ["hamLuong", "HamLuong"]) ??
-      getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"])
+      getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"]) ??
+      getMedicationOrderField(hisMed, ["HamLuong", "hamLuong"])
     ),
     loaiThuoc: normalizeString(
       pickFirstDefined(payload, ["loaiThuoc", "LoaiThuoc"]) ??
-      getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"])
+      getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"]) ??
+      getMedicationOrderField(hisMed, ["LoaiThuoc", "loaiThuoc"])
     ),
     donVi: normalizeString(
       pickFirstDefined(payload, ["donVi", "DonVi"]) ??
-      getMedicationOrderField(medOrder, ["donVi", "DonVi"])
+      getMedicationOrderField(medOrder, ["donVi", "DonVi"]) ??
+      getMedicationOrderField(hisMed, ["DonVi", "donVi"])
     ),
     soLuongDung: Number.isFinite(normalizedQuantity) ? normalizedQuantity : 0,
     shift,
@@ -728,10 +749,21 @@ exports.getMedicationConfirmationHistory = async (req, res) => {
       historyFilter.idKhoa = idKhoa;
     }
 
+    const returnFilter = {
+      returnedAt: { $gte: start, $lte: end },
+    };
+
+    if (idKhoa) {
+      returnFilter.idKhoa = idKhoa;
+    }
+
     const rows = await MedShiftSplit.find({
-      confirmationHistory: { $elemMatch: historyFilter },
+      $or: [
+        { confirmationHistory: { $elemMatch: historyFilter } },
+        { returnHistory: { $elemMatch: returnFilter } },
+      ],
     })
-      .select("idPhieuKham idPhieuThuoc confirmationHistory")
+      .select("idPhieuKham idPhieuThuoc confirmationHistory returnHistory")
       .lean();
 
     const medOrders = rows.length
@@ -747,13 +779,52 @@ exports.getMedicationConfirmationHistory = async (req, res) => {
       medOrders.map((row) => [`${row.idPhieuKham}__${row.idPhieuThuoc}`, row])
     );
 
-    const items = rows
-      .flatMap((row) =>
-        (row.confirmationHistory || [])
+    let items = rows.flatMap((row) =>
+      (row.confirmationHistory || [])
+        .filter((entry) => {
+          const confirmedAt = new Date(entry.confirmedAt);
+          if (Number.isNaN(confirmedAt.getTime())) return false;
+          if (confirmedAt < start || confirmedAt > end) return false;
+          if (idKhoa && entry.idKhoa !== idKhoa) return false;
+          return true;
+        })
+        .map((entry) => {
+          const medOrder = medOrderMap.get(`${row.idPhieuKham}__${row.idPhieuThuoc}`);
+
+          return {
+            idPhieuKham: row.idPhieuKham,
+            idPhieuThuoc: row.idPhieuThuoc,
+            idBenhNhan: normalizeString(entry.idBenhNhan),
+            tenBenhNhan: normalizeString(entry.tenBenhNhan) ?? "",
+            maBenhNhan: normalizeString(entry.maBenhNhan),
+            tuoi: normalizeString(entry.tuoi),
+            tenThuoc:
+              normalizeString(entry.tenThuoc) ??
+              getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"]),
+            hamLuong:
+              normalizeString(entry.hamLuong) ??
+              getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"]),
+            loaiThuoc:
+              normalizeString(entry.loaiThuoc) ??
+              getMedicationOrderField(medOrder, ["loaiThuoc", "LoaiThuoc"]),
+            donVi:
+              normalizeString(entry.donVi) ??
+              getMedicationOrderField(medOrder, ["donVi", "DonVi"]),
+            soLuongDung: entry.soLuongDung ?? 0,
+            confirmedAt: entry.confirmedAt ?? null,
+            shift: entry.shift ?? null,
+            type: "CONFIRM",
+          };
+        })
+    );
+
+    items = items.concat(
+      rows.flatMap((row) =>
+        (row.returnHistory || [])
           .filter((entry) => {
-            const confirmedAt = new Date(entry.confirmedAt);
-            if (Number.isNaN(confirmedAt.getTime())) return false;
-            if (confirmedAt < start || confirmedAt > end) return false;
+            const returnedAt = new Date(entry.returnedAt);
+            if (Number.isNaN(returnedAt.getTime())) return false;
+            if (returnedAt < start || returnedAt > end) return false;
             if (idKhoa && entry.idKhoa !== idKhoa) return false;
             return true;
           })
@@ -769,8 +840,7 @@ exports.getMedicationConfirmationHistory = async (req, res) => {
               tuoi: normalizeString(entry.tuoi),
               tenThuoc:
                 normalizeString(entry.tenThuoc) ??
-                getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"]) ??
-                "",
+                getMedicationOrderField(medOrder, ["tenThuoc", "Ten", "TenThuoc"]),
               hamLuong:
                 normalizeString(entry.hamLuong) ??
                 getMedicationOrderField(medOrder, ["hamLuong", "HamLuong"]),
@@ -780,12 +850,57 @@ exports.getMedicationConfirmationHistory = async (req, res) => {
               donVi:
                 normalizeString(entry.donVi) ??
                 getMedicationOrderField(medOrder, ["donVi", "DonVi"]),
-              soLuongDung: entry.soLuongDung ?? 0,
-              confirmedAt: entry.confirmedAt ?? null,
+              soLuongTra: entry.quantity ?? 0,
+              reason: normalizeString(entry.reason),
+              status: normalizeString(entry.status),
+              confirmedAt: entry.returnedAt ?? null,
               shift: entry.shift ?? null,
+              type: "RETURN",
             };
           })
       )
+    );
+
+    // Vá hiển thị cho các entry cũ đã lỡ lưu rỗng trước khi có HIS fallback ở lúc confirm:
+    // tra cứu bổ sung từ HIS live theo idPhieuKham, không ghi ngược lại DB.
+    const idPhieuKhamNeedingHis = [
+      ...new Set(items.filter((item) => !item.tenThuoc).map((item) => item.idPhieuKham)),
+    ];
+
+    if (idPhieuKhamNeedingHis.length > 0) {
+      const hisResult = await mapWithConcurrency(idPhieuKhamNeedingHis, async (id) => {
+        const meds = await getDonThuocByPhieuKham(id);
+        return [id, Array.isArray(meds) ? meds : []];
+      });
+
+      const hisMedMap = new Map(
+        hisResult.results
+          .filter((entry) => Array.isArray(entry) && entry[0])
+          .flatMap(([id, meds]) =>
+            meds
+              .filter((med) => normalizeString(med?.IdPhieuThuoc))
+              .map((med) => [`${id}__${normalizeString(med.IdPhieuThuoc)}`, med])
+          )
+      );
+
+      items = items.map((item) => {
+        if (item.tenThuoc) return item;
+
+        const hisMed = hisMedMap.get(`${item.idPhieuKham}__${item.idPhieuThuoc}`);
+        if (!hisMed) return item;
+
+        return {
+          ...item,
+          tenThuoc: getMedicationOrderField(hisMed, ["TenThuoc", "Ten", "tenThuoc"]),
+          hamLuong: item.hamLuong ?? getMedicationOrderField(hisMed, ["HamLuong", "hamLuong"]),
+          loaiThuoc: item.loaiThuoc ?? getMedicationOrderField(hisMed, ["LoaiThuoc", "loaiThuoc"]),
+          donVi: item.donVi ?? getMedicationOrderField(hisMed, ["DonVi", "donVi"]),
+        };
+      });
+    }
+
+    items = items
+      .map((item) => ({ ...item, tenThuoc: item.tenThuoc ?? "" }))
       .sort((a, b) => new Date(b.confirmedAt) - new Date(a.confirmedAt));
 
     return res.json({
@@ -854,9 +969,19 @@ exports.confirmUsage = async (req, res) => {
       return res.json(existing);
     }
 
+    if (Number(existing.splits?.[shift] ?? 0) <= 0) {
+      return res.status(400).json({ message: "Ca này không có liều thuốc được chia, không thể xác nhận" });
+    }
+
     const medOrder = await MedicationOrder.findOne({ idPhieuKham, idPhieuThuoc })
       .select("tenThuoc Ten TenThuoc hamLuong HamLuong loaiThuoc LoaiThuoc donVi DonVi")
       .lean();
+
+    let hisMed = null;
+    if (!hasResolvableMedName(req.body, medOrder)) {
+      const meds = await getDonThuocByPhieuKham(idPhieuKham).catch(() => []);
+      hisMed = findHisMedByIdPhieuThuoc(meds, idPhieuThuoc);
+    }
 
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
@@ -868,6 +993,7 @@ exports.confirmUsage = async (req, res) => {
             shift,
             splitRow: existing,
             medOrder,
+            hisMed,
             payload: req.body,
           }),
         },
@@ -898,10 +1024,14 @@ exports.confirmAllUsage = async (req, res) => {
     );
 
     if (!rows.length) {
-      return res.status(404).json({ message: "KhÃ´ng tÃ¬m tháº¥y phiáº¿u thuá»‘c" });
+      return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
     }
 
-    const pendingRows = rows.filter((row) => !(row.confirmedShifts ?? []).includes(shift));
+    const pendingRows = rows.filter(
+      (row) =>
+        Number(row.splits?.[shift] ?? 0) > 0 &&
+        !(row.confirmedShifts ?? []).includes(shift)
+    );
     const pendingIds = pendingRows.map((row) => row._id);
 
     const itemMap = new Map(
@@ -927,32 +1057,45 @@ exports.confirmAllUsage = async (req, res) => {
     if (pendingIds.length > 0) {
       const sharedPayload = { ...(req.body || {}) };
 
-      const result = await MedShiftSplit.bulkWrite(
-        pendingRows.map((row) => {
-          const payload = {
-            ...sharedPayload,
-            ...(itemMap.get(String(row.idPhieuThuoc)) || {}),
-          };
+      const payloadByRow = pendingRows.map((row) => ({
+        ...sharedPayload,
+        ...(itemMap.get(String(row.idPhieuThuoc)) || {}),
+      }));
 
-          return {
-            updateOne: {
-              filter: { _id: row._id },
-              update: {
-                $addToSet: { confirmedShifts: shift },
-                $push: {
-                  confirmationHistory: buildHistoryEntry({
-                    req,
-                    shift,
-                    splitRow: row,
-                    medOrder: medOrderMap.get(String(row.idPhieuThuoc)),
-                    payload,
-                  }),
-                },
-                $set: { updatedBy: userId },
+      const needsHisFallback = pendingRows.some((row, index) =>
+        !hasResolvableMedName(payloadByRow[index], medOrderMap.get(String(row.idPhieuThuoc)))
+      );
+
+      let hisMedMap = new Map();
+      if (needsHisFallback) {
+        const meds = await getDonThuocByPhieuKham(idPhieuKham).catch(() => []);
+        hisMedMap = new Map(
+          meds
+            .filter((med) => normalizeString(med?.IdPhieuThuoc))
+            .map((med) => [normalizeString(med.IdPhieuThuoc), med])
+        );
+      }
+
+      const result = await MedShiftSplit.bulkWrite(
+        pendingRows.map((row, index) => ({
+          updateOne: {
+            filter: { _id: row._id },
+            update: {
+              $addToSet: { confirmedShifts: shift },
+              $push: {
+                confirmationHistory: buildHistoryEntry({
+                  req,
+                  shift,
+                  splitRow: row,
+                  medOrder: medOrderMap.get(String(row.idPhieuThuoc)),
+                  hisMed: hisMedMap.get(normalizeString(row.idPhieuThuoc)),
+                  payload: payloadByRow[index],
+                }),
               },
+              $set: { updatedBy: userId },
             },
-          };
-        })
+          },
+        }))
       );
 
       modifiedCount = result.modifiedCount ?? result.nModified ?? pendingIds.length;
@@ -987,10 +1130,19 @@ exports.cancelConfirmedUsage = async (req, res) => {
       return res.status(404).json({ message: "Không tìm thấy phiếu thuốc" });
     }
 
+    const latestEntry = (existing.confirmationHistory || [])
+      .filter((entry) => entry.shift === shift)
+      .sort((a, b) => new Date(b.confirmedAt) - new Date(a.confirmedAt))[0];
+
+    const pullFields = { confirmedShifts: shift };
+    if (latestEntry?._id) {
+      pullFields.confirmationHistory = { _id: latestEntry._id };
+    }
+
     const updated = await MedShiftSplit.findOneAndUpdate(
       { idPhieuKham, idPhieuThuoc },
       {
-        $pull: { confirmedShifts: shift },
+        $pull: pullFields,
         $set: { updatedBy: userId },
       },
       { new: true }
@@ -1008,9 +1160,14 @@ exports.returnMedication = async (req, res) => {
     const {
       quantity,
       reason,
+      idBenhNhan,
       tenBenhNhan,
       maBenhNhan,
+      tuoi,
       tenThuoc,
+      hamLuong,
+      loaiThuoc,
+      donVi,
       idBenhAn,
       shift,
     } = req.body;
@@ -1018,9 +1175,24 @@ exports.returnMedication = async (req, res) => {
     const userId = req.user?.id || req.user?.sub;
     const idKhoaRoom = req.user?.idKhoa?.toString?.() || req.user?.idKhoa;
 
+    let hisMed = null;
+    if (!normalizeString(tenThuoc)) {
+      const meds = await getDonThuocByPhieuKham(idPhieuKham).catch(() => []);
+      hisMed = findHisMedByIdPhieuThuoc(meds, idPhieuThuoc);
+    }
+
+    const resolvedTenThuoc =
+      normalizeString(tenThuoc) ?? getMedicationOrderField(hisMed, ["TenThuoc", "Ten", "tenThuoc"]);
+    const resolvedHamLuong =
+      normalizeString(hamLuong) ?? getMedicationOrderField(hisMed, ["HamLuong", "hamLuong"]);
+    const resolvedLoaiThuoc =
+      normalizeString(loaiThuoc) ?? getMedicationOrderField(hisMed, ["LoaiThuoc", "loaiThuoc"]);
+    const resolvedDonVi =
+      normalizeString(donVi) ?? getMedicationOrderField(hisMed, ["DonVi", "donVi"]);
+
     const safeTen = tenBenhNhan || "Bệnh nhân";
     const safeMa = maBenhNhan || "N/A";
-    const safeThuoc = tenThuoc || "Thuốc";
+    const safeThuoc = resolvedTenThuoc || "Thuốc";
     const safeQty = quantity || 0;
     const safeReason = reason || "";
 
@@ -1037,6 +1209,15 @@ exports.returnMedication = async (req, res) => {
       {
         $push: {
           returnHistory: {
+            idKhoa: idKhoaRoom || null,
+            idBenhNhan: normalizeString(idBenhNhan),
+            tenBenhNhan: normalizeString(tenBenhNhan),
+            maBenhNhan: normalizeString(maBenhNhan),
+            tuoi: normalizeString(tuoi),
+            tenThuoc: resolvedTenThuoc,
+            hamLuong: resolvedHamLuong,
+            loaiThuoc: resolvedLoaiThuoc,
+            donVi: resolvedDonVi,
             quantity: safeQty,
             reason: safeReason,
             shift,

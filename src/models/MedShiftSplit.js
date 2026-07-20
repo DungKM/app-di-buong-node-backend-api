@@ -39,6 +39,15 @@ const MedShiftSplitSchema = new mongoose.Schema(
     ],
     returnHistory: [
       {
+        idKhoa: { type: String, default: null },
+        idBenhNhan: { type: String, default: null },
+        tenBenhNhan: { type: String, default: null },
+        maBenhNhan: { type: String, default: null },
+        tuoi: { type: String, default: null },
+        tenThuoc: { type: String, default: null },
+        hamLuong: { type: String, default: null },
+        loaiThuoc: { type: String, default: null },
+        donVi: { type: String, default: null },
         quantity: { type: Number, required: true },
         reason: { type: String, required: true },
         shift: {
@@ -93,6 +102,7 @@ const MedShiftSplitSchema = new mongoose.Schema(
 
 MedShiftSplitSchema.index({ idPhieuKham: 1, idPhieuThuoc: 1 }, { unique: true });
 MedShiftSplitSchema.index({ "confirmationHistory.idKhoa": 1, "confirmationHistory.confirmedAt": -1 });
+MedShiftSplitSchema.index({ "returnHistory.idKhoa": 1, "returnHistory.returnedAt": -1 });
 
 module.exports = mongoose.model("MedShiftSplit", MedShiftSplitSchema);
 

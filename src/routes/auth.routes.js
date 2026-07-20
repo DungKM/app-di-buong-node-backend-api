@@ -37,9 +37,10 @@ router.patch("/users/:id/status",
   authController.updateStatus
 );
 
-router.post("/users/:id/reset-password", 
-  authRequired, 
-  validate(resetPasswordSchema), 
+router.post("/users/:id/reset-password",
+  authRequired,
+  requireRoles("admin"),
+  validate(resetPasswordSchema),
   authController.resetPassword
 );
 router.get("/users/import/template", authRequired, requireRoles("admin"), authController.downloadUsersImportTemplate);
